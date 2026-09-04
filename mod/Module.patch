@@ -1,0 +1,12 @@
+diff --git a/app/src/main/java/io/github/s1ddhants1/swiftbackupprem/Module.kt b/app/src/main/java/io/github/s1ddhants1/swiftbackupprem/Module.kt
+--- a/app/src/main/java/io/github/s1ddhants1/swiftbackupprem/Module.kt
++++ b/app/src/main/java/io/github/s1ddhants1/swiftbackupprem/Module.kt
+@@ -108,6 +108,7 @@ class Module : XposedModule() {
+         GoogleDriveScopeHook.apply(this, ctx, cl, targets, prefs)
+         TelemetrySuppressionHook.apply(this, ctx, cl, targets, prefs)
+         BackupRebuilderHook.apply(this, ctx, cl, targets, prefs)
+         CloudDiscoveryHook.apply(this, ctx, cl, targets, prefs)
++        ModHook.apply(this, ctx, cl, targets, prefs)
+
+         if (swiftAppInstance != null) {
+             PremiumFeatureHook.hookSwiftAppPremium(this, swiftAppInstance, prefs.enablePremium)

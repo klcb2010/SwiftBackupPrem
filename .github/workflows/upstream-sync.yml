@@ -1,0 +1,178 @@
+name: Sync Upstream + Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream
+        run: |
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/s1ddhants1/SwiftBackupPrem.git
+          git fetch upstream main --depth=1
+
+      - name: Check upstream change
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ -f .upstream.sha ]; then
+            LAST_SHA="$(cat .upstream.sha)"
+          else
+            LAST_SHA=""
+          fi
+
+          echo "last=$LAST_SHA"
+          echo "upstream=$UPSTREAM_SHA"
+
+          if [ "$LAST_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "[SKIP] upstream unchanged"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "[RUN] upstream changed"
+          fi
+
+      - name: Sync upstream
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[sync] synchronizing upstream..."
+
+          # Save local protected files.
+          mkdir -p /tmp/local-protected
+
+          if [ -d mod ]; then
+            cp -a mod /tmp/local-protected/mod
+          fi
+
+          if [ -f .github/workflows/ci.yml ]; then
+            mkdir -p /tmp/local-protected/.github/workflows
+            cp .github/workflows/ci.yml \
+              /tmp/local-protected/.github/workflows/ci.yml
+          fi
+
+          # Replace working tree with upstream.
+          git read-tree -u --reset upstream/main
+
+          # Restore local protected files.
+          if [ -d /tmp/local-protected/mod ]; then
+            rm -rf mod
+            cp -a /tmp/local-protected/mod mod
+          fi
+
+          if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
+            mkdir -p .github/workflows
+            cp /tmp/local-protected/.github/workflows/ci.yml \
+              .github/workflows/ci.yml
+          fi
+
+          echo "[OK] upstream synced"
+
+      - name: Apply local mod
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          chmod +x mod/apply.sh
+          ./mod/apply.sh
+
+      - name: Verify API 102
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking LibXposed API..."
+
+          grep -R \
+            '102.0.0' \
+            gradle/libs.versions.toml \
+            || true
+
+          test -f mod/ModHook.kt
+          test -f mod/apply.sh
+          test -f mod/Module.patch
+
+          echo "[OK] mod files present"
+
+      - name: Setup Java
+        if: steps.upstream.outputs.changed == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        if: steps.upstream.outputs.changed == 'true'
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: steps.upstream.outputs.changed == 'true'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build release
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Record upstream SHA
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          echo "${{ steps.upstream.outputs.sha }}" > .upstream.sha
+
+      - name: Commit and push
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "[SKIP] no changes to commit"
+            exit 0
+          fi
+
+          git commit \
+            -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+
+          git push origin HEAD:main
+
+      - name: Upload APK
+        if: steps.upstream.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftBackupPrem-release
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/mapping/release/*
+          if-no-files-found: warn

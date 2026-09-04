@@ -1,171 +1,376 @@
-package com.unlocksb.module;
+package io.github.s1ddhants1.swiftbackupprem.hook
 
-import android.os.Bundle;
-import android.util.Log;
-
-import java.lang.reflect.Method;
-
-import io.github.libxposed.api.XposedModule;
-import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam;
+import android.os.Bundle
+import android.util.Log
+import androidx.annotation.Keep
+import io.github.libxposed.api.XposedInterface
+import io.github.libxposed.api.XposedModule
+import io.github.s1ddhants1.swiftbackupprem.Consts
+import io.github.s1ddhants1.swiftbackupprem.util.PreferencesManager
+import java.lang.reflect.Method
 
 /**
- * Swift Backup 免强制 Google 登录（通杀版）
- * 适配 Swift Backup 多个版本，动态查找类和方法
+ * Migrated from the original com.unlocksb.module.HookEntry.
+ *
+ * This file is the API-102 version maintained by the local mod/ layer.
  */
-public class HookEntry extends XposedModule {
+@Keep
+object ModHook : HookHandler {
 
-    private static final String TAG = "SBNoLogin";
-    private static final String PKG = "org.swiftapps.swiftbackup";
+    private const val TAG = "SBNoLogin"
+    private const val PKG = "org.swiftapps.swiftbackup"
 
-    // 缓存反射对象
-    private static Object cachedVInstance = null;
-    private static Method cachedGetNon = null;
-    private static Method cachedSetNon = null;
-    private static Object cachedAnonHelper = null;
-    private static Method cachedAnonDMethod = null;
-    private static Class<?> cachedMFirebaseUser = null;
+    private var cachedClassLoader: ClassLoader? = null
 
-    @Override
-    public void onPackageLoaded(PackageLoadedParam param) {
-        if (!PKG.equals(param.getPackageName())) {
-            return;
+    private var cachedVInstance: Any? = null
+    private var cachedGetNon: Method? = null
+    private var cachedSetNon: Method? = null
+
+    private var cachedAnonHelper: Any? = null
+    private var cachedAnonDMethod: Method? = null
+
+    private var cachedMFirebaseUser: Class<*>? = null
+
+    override fun apply(
+        module: XposedModule,
+        context: android.content.Context,
+        classLoader: ClassLoader,
+        targets: ResolvedTargets,
+        prefs: PreferencesManager
+    ) {
+        if (context.packageName != PKG) {
+            return
         }
-        ClassLoader cl = param.getDefaultClassLoader();
+
+        resetCacheIfClassLoaderChanged(classLoader)
+
         try {
-            hookIsAnonymous(cl);
-            hookAutoLogin(cl);
-        } catch (Throwable t) {
-            log(Log.ERROR, TAG, "hook setup failed", t);
+            hookIsAnonymous(module, classLoader)
+            hookAutoLogin(module, classLoader)
+        } catch (t: Throwable) {
+            Log.e(TAG, "hook setup failed", t)
         }
     }
 
-    /** 云功能门禁：让 MFirebaseUser.isAnonymous() 恒为 false */
-    private void hookIsAnonymous(ClassLoader cl) throws Exception {
-        // 动态查找 MFirebaseUser 类（支持多个可能的类名）
-        Class<?> mfu = findClass(cl, "org.swiftapps.swiftbackup.anonymous.MFirebaseUser");
+    private fun resetCacheIfClassLoaderChanged(classLoader: ClassLoader) {
+        if (cachedClassLoader === classLoader) {
+            return
+        }
+
+        cachedClassLoader = classLoader
+
+        cachedVInstance = null
+        cachedGetNon = null
+        cachedSetNon = null
+        cachedAnonHelper = null
+        cachedAnonDMethod = null
+        cachedMFirebaseUser = null
+    }
+
+    /**
+     * Cloud feature gate:
+     * make MFirebaseUser.isAnonymous() return false.
+     */
+    private fun hookIsAnonymous(
+        module: XposedModule,
+        classLoader: ClassLoader
+    ) {
+        var mfu = cachedMFirebaseUser
+
         if (mfu == null) {
-            mfu = findClass(cl, "org.swiftapps.swiftbackup.anonymous.MFirebaseUserKt");
+            mfu = findClass(
+                classLoader,
+                "org.swiftapps.swiftbackup.anonymous.MFirebaseUser"
+            )
+
+            if (mfu == null) {
+                mfu = findClass(
+                    classLoader,
+                    "org.swiftapps.swiftbackup.anonymous.MFirebaseUserKt"
+                )
+            }
+
+            cachedMFirebaseUser = mfu
         }
+
         if (mfu == null) {
-            log(Log.WARN, TAG, "MFirebaseUser not found, skip isAnonymous hook");
-            return;
+            Log.w(TAG, "MFirebaseUser not found, skip isAnonymous hook")
+            return
         }
-        cachedMFirebaseUser = mfu;
-        Method isAnonymous = mfu.getDeclaredMethod("isAnonymous");
-        hook(isAnonymous).setPriority(PRIORITY_HIGHEST).intercept(chain -> false);
-        log(Log.INFO, TAG, "MFirebaseUser.isAnonymous -> false");
+
+        val isAnonymous = try {
+            mfu.getDeclaredMethod("isAnonymous")
+        } catch (t: Throwable) {
+            Log.w(TAG, "MFirebaseUser.isAnonymous not found", t)
+            return
+        }
+
+        module.hookTracked(
+            isAnonymous,
+            idPrefix = "mod-is-anonymous",
+            priority = XposedInterface.PRIORITY_HIGHEST
+        ).intercept {
+            false
+        }
+
+        Log.i(TAG, "MFirebaseUser.isAnonymous -> false")
     }
 
-    /** 自动匿名登录：进入 IntroActivity 前若未登录则注入本地匿名用户 */
-    private void hookAutoLogin(ClassLoader cl) throws Exception {
-        // 动态查找 IntroActivity（支持多个可能的类名）
-        Class<?> intro = findClass(cl, "org.swiftapps.swiftbackup.intro.IntroActivity");
+    /**
+     * Entering IntroActivity:
+     * if the local session is empty, populate it with the locally
+     * constructed anonymous user.
+     */
+    private fun hookAutoLogin(
+        module: XposedModule,
+        classLoader: ClassLoader
+    ) {
+        var intro = findClass(
+            classLoader,
+            "org.swiftapps.swiftbackup.intro.IntroActivity"
+        )
+
         if (intro == null) {
-            intro = findClass(cl, "org.swiftapps.swiftbackup.activities.IntroActivity");
-        }
-        if (intro == null) {
-            intro = findClass(cl, "org.swiftapps.swiftbackup.ui.IntroActivity");
-        }
-        if (intro == null) {
-            log(Log.WARN, TAG, "IntroActivity not found, skip auto login hook");
-            return;
+            intro = findClass(
+                classLoader,
+                "org.swiftapps.swiftbackup.activities.IntroActivity"
+            )
         }
 
-        Method onCreate = intro.getDeclaredMethod("onCreate", Bundle.class);
-        hook(onCreate).setPriority(PRIORITY_HIGHEST).intercept(chain -> {
-            ensureLoggedIn(cl);
-            return chain.proceed();
-        });
-        log(Log.INFO, TAG, "IntroActivity.onCreate hooked (auto anonymous login)");
+        if (intro == null) {
+            intro = findClass(
+                classLoader,
+                "org.swiftapps.swiftbackup.ui.IntroActivity"
+            )
+        }
+
+        if (intro == null) {
+            Log.w(TAG, "IntroActivity not found, skip auto login hook")
+            return
+        }
+
+        val onCreate = try {
+            intro.getDeclaredMethod("onCreate", Bundle::class.java)
+        } catch (t: Throwable) {
+            Log.w(TAG, "IntroActivity.onCreate not found", t)
+            return
+        }
+
+        module.hookTracked(
+            onCreate,
+            idPrefix = "mod-intro-on-create",
+            priority = XposedInterface.PRIORITY_HIGHEST
+        ).intercept { chain ->
+            ensureLoggedIn(classLoader)
+            chain.proceed()
+        }
+
+        Log.i(TAG, "IntroActivity.onCreate hooked")
     }
 
-    /** 若会话为空，写入 anonymous.a.b.d() 构造的匿名用户 */
-    private void ensureLoggedIn(ClassLoader cl) {
+    /**
+     * If the current session is empty, construct the anonymous user
+     * through anonymous.a.b.d() and place it into V.setNon().
+     */
+    private fun ensureLoggedIn(classLoader: ClassLoader) {
         try {
-            // 1. 动态查找 V 类
-            Class<?> vCls = findClass(cl, "org.swiftapps.swiftbackup.common.V");
-            if (vCls == null) {
-                vCls = findClass(cl, "org.swiftapps.swiftbackup.common.v");
-            }
-            if (vCls == null) {
-                log(Log.WARN, TAG, "V class not found");
-                return;
+            /*
+             * 1. Locate V.
+             */
+            var vClass = findClass(
+                classLoader,
+                "org.swiftapps.swiftbackup.common.V"
+            )
+
+            if (vClass == null) {
+                vClass = findClass(
+                    classLoader,
+                    "org.swiftapps.swiftbackup.common.v"
+                )
             }
 
-            // 2. 获取 INSTANCE
-            if (cachedVInstance == null) {
-                cachedVInstance = vCls.getField("INSTANCE").get(null);
-            }
-            if (cachedVInstance == null) {
-                log(Log.WARN, TAG, "V.INSTANCE is null");
-                return;
+            if (vClass == null) {
+                Log.w(TAG, "V class not found")
+                return
             }
 
-            // 3. getNon 检查是否已登录
+            /*
+             * 2. Obtain V.INSTANCE.
+             */
+            if (cachedVInstance == null) {
+                val instanceField = try {
+                    vClass.getField("INSTANCE")
+                } catch (_: Throwable) {
+                    vClass.getDeclaredField("INSTANCE").apply {
+                        isAccessible = true
+                    }
+                }
+
+                cachedVInstance = instanceField.get(null)
+            }
+
+            val vInstance = cachedVInstance
+
+            if (vInstance == null) {
+                Log.w(TAG, "V.INSTANCE is null")
+                return
+            }
+
+            /*
+             * 3. Check V.getNon().
+             */
             if (cachedGetNon == null) {
-                cachedGetNon = vCls.getMethod("getNon");
-            }
-            if (cachedGetNon.invoke(cachedVInstance) != null) {
-                return;
+                cachedGetNon = vClass.getMethod("getNon")
             }
 
-            // 4. 动态查找 anonymous.a 类
-            Class<?> aCls = findClass(cl, "org.swiftapps.swiftbackup.anonymous.a");
-            if (aCls == null) {
-                aCls = findClass(cl, "org.swiftapps.swiftbackup.anonymous.i");
-            }
-            if (aCls == null) {
-                log(Log.WARN, TAG, "anonymous.a not found");
-                return;
+            val currentUser = cachedGetNon?.invoke(vInstance)
+
+            if (currentUser != null) {
+                return
             }
 
-            // 5. 获取字段 b
+            /*
+             * 4. Locate anonymous.a / anonymous.i.
+             */
+            var aClass = findClass(
+                classLoader,
+                "org.swiftapps.swiftbackup.anonymous.a"
+            )
+
+            if (aClass == null) {
+                aClass = findClass(
+                    classLoader,
+                    "org.swiftapps.swiftbackup.anonymous.i"
+                )
+            }
+
+            if (aClass == null) {
+                Log.w(TAG, "anonymous.a/i not found")
+                return
+            }
+
+            /*
+             * 5. Obtain static field b.
+             */
             if (cachedAnonHelper == null) {
-                cachedAnonHelper = aCls.getField("b").get(null);
-            }
-            if (cachedAnonHelper == null) {
-                log(Log.WARN, TAG, "anonymous.a.b is null");
-                return;
+                val bField = try {
+                    aClass.getField("b")
+                } catch (_: Throwable) {
+                    aClass.getDeclaredField("b").apply {
+                        isAccessible = true
+                    }
+                }
+
+                cachedAnonHelper = bField.get(null)
             }
 
-            // 6. 调用 d() 获取匿名用户
+            val helper = cachedAnonHelper
+
+            if (helper == null) {
+                Log.w(TAG, "anonymous.a.b is null")
+                return
+            }
+
+            /*
+             * 6. Call b.d().
+             */
             if (cachedAnonDMethod == null) {
-                cachedAnonDMethod = cachedAnonHelper.getClass().getMethod("d");
+                cachedAnonDMethod = helper.javaClass.getMethod("d")
             }
-            Object anonUser = cachedAnonDMethod.invoke(cachedAnonHelper);
+
+            val anonUser = cachedAnonDMethod?.invoke(helper)
+
             if (anonUser == null) {
-                log(Log.WARN, TAG, "anonymous user is null");
-                return;
+                Log.w(TAG, "anonymous user is null")
+                return
             }
 
-            // 7. setNon 注入
+            /*
+             * 7. V.setNon(anonymousUser).
+             *
+             * Resolve the method by name and parameter compatibility instead
+             * of requiring an exact Java reflection class match.
+             */
             if (cachedSetNon == null) {
-                cachedSetNon = vCls.getMethod("setNon", anonUser.getClass());
+                cachedSetNon = vClass.methods.firstOrNull { method ->
+                    method.name == "setNon" &&
+                        method.parameterCount == 1 &&
+                        (
+                            method.parameterTypes[0].isAssignableFrom(
+                                anonUser.javaClass
+                            ) ||
+                                method.parameterTypes[0] == anonUser.javaClass
+                            )
+                }
+
+                if (cachedSetNon == null) {
+                    cachedSetNon = vClass.declaredMethods.firstOrNull { method ->
+                        method.name == "setNon" &&
+                            method.parameterCount == 1 &&
+                            (
+                                method.parameterTypes[0].isAssignableFrom(
+                                    anonUser.javaClass
+                                ) ||
+                                    method.parameterTypes[0] == anonUser.javaClass
+                                )
+                    }?.apply {
+                        isAccessible = true
+                    }
+                }
             }
-            cachedSetNon.invoke(cachedVInstance, anonUser);
-            log(Log.INFO, TAG, "anonymous login injected, uid=" + safeUid(anonUser));
 
-        } catch (Throwable t) {
-            log(Log.WARN, TAG, "ensureLoggedIn failed (non-fatal)", t);
+            val setNon = cachedSetNon
+
+            if (setNon == null) {
+                Log.w(TAG, "V.setNon(user) not found")
+                return
+            }
+
+            setNon.invoke(vInstance, anonUser)
+
+            Log.i(
+                TAG,
+                "anonymous login injected, uid=${safeUid(anonUser)}"
+            )
+        } catch (t: Throwable) {
+            /*
+             * Keep this hook non-fatal. A changed Swift Backup version
+             * should not bring down the host process.
+             */
+            Log.w(TAG, "ensureLoggedIn failed (non-fatal)", t)
         }
     }
 
-    /** 动态查找类，支持多个可能的类名 */
-    private Class<?> findClass(ClassLoader cl, String name) {
-        try {
-            return Class.forName(name, false, cl);
-        } catch (ClassNotFoundException e) {
-            return null;
+    private fun findClass(
+        classLoader: ClassLoader,
+        name: String
+    ): Class<*>? {
+        return try {
+            Class.forName(name, false, classLoader)
+        } catch (_: ClassNotFoundException) {
+            null
+        } catch (t: Throwable) {
+            Log.w(TAG, "failed loading class: $name", t)
+            null
         }
     }
 
-    private String safeUid(Object user) {
-        try {
-            Method m = user.getClass().getMethod("getUid");
-            Object r = m.invoke(user);
-            return r == null ? "null" : r.toString();
-        } catch (Throwable ignored) {
-            return "?";
+    private fun safeUid(user: Any): String {
+        return try {
+            val method = user.javaClass.methods.firstOrNull {
+                it.name == "getUid" && it.parameterCount == 0
+            } ?: user.javaClass.declaredMethods.firstOrNull {
+                it.name == "getUid" && it.parameterCount == 0
+            }
+
+            if (method == null) {
+                "?"
+            } else {
+                method.isAccessible = true
+                method.invoke(user)?.toString() ?: "null"
+            }
+        } catch (_: Throwable) {
+            "?"
         }
     }
 }
