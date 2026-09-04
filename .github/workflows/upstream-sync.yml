@@ -1,4 +1,4 @@
-name: Sync Upstream + Build + Release
+name: Sync Upstream + Build
 
 on:
   workflow_dispatch:
@@ -17,32 +17,37 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
 
+      # ---------------------------------------------------------
+      # Git
+      # ---------------------------------------------------------
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       # ---------------------------------------------------------
-      # Fetch upstream
+      # Upstream
       # ---------------------------------------------------------
       - name: Add upstream
+        shell: bash
         run: |
           set -euo pipefail
 
           git remote remove upstream 2>/dev/null || true
           git remote add upstream https://github.com/s1ddhants1/SwiftBackupPrem.git
-
           git fetch upstream main --depth=1
-          git fetch upstream --tags --force
 
       # ---------------------------------------------------------
-      # Detect upstream commit
+      # Check upstream change
       # ---------------------------------------------------------
       - name: Check upstream change
         id: upstream
@@ -64,99 +69,17 @@ jobs:
 
           if [ "$LAST_SHA" = "$UPSTREAM_SHA" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "[SKIP] upstream main unchanged"
+            echo "[SKIP] upstream unchanged"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "[RUN] upstream main changed"
+            echo "[RUN] upstream changed"
           fi
 
       # ---------------------------------------------------------
-      # Find newest v* tag that actually exists on upstream.
-      # This is independent from upstream/main SHA.
-      # ---------------------------------------------------------
-      - name: Get upstream release tag
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TAG="$(
-            git ls-remote --tags upstream 'refs/tags/v*' |
-            awk '!/\^\{/{sub("refs/tags/", "", $2); print $2}' |
-            sort -V -r |
-            head -n 1
-          )"
-
-          if [ -z "$TAG" ]; then
-            echo "[WARN] No upstream v* tag found"
-            echo "has_tag=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "has_tag=true" >> "$GITHUB_OUTPUT"
-          echo "[OK] upstream release tag: $TAG"
-
-      # ---------------------------------------------------------
-      # Check the actual GitHub Release BEFORE deciding whether
-      # a build is required.
+      # Save protected local files
       #
       # IMPORTANT:
-      # A new upstream tag can appear without changing main SHA.
-      # Therefore release detection must NOT depend on
-      # steps.upstream.outputs.changed.
-      # ---------------------------------------------------------
-      - name: Check existing GitHub Release
-        id: existing_release
-        if: steps.release.outputs.has_tag == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "[check] release tag: $RELEASE_TAG"
-
-          if gh release view "$RELEASE_TAG" \
-              --repo "${GITHUB_REPOSITORY}" \
-              >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "[SKIP] GitHub Release already exists: $RELEASE_TAG"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "[RUN] GitHub Release does not exist: $RELEASE_TAG"
-          fi
-
-      # ---------------------------------------------------------
-      # Decide whether synchronization/build is required.
-      # Build when either:
-      #   1. upstream/main changed, OR
-      #   2. newest upstream release tag has no local Release.
-      # ---------------------------------------------------------
-      - name: Decide build
-        id: build
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          UPSTREAM_CHANGED="${{ steps.upstream.outputs.changed }}"
-          HAS_TAG="${{ steps.release.outputs.has_tag }}"
-          RELEASE_EXISTS="${{ steps.existing_release.outputs.exists || 'false' }}"
-
-          if [ "$UPSTREAM_CHANGED" = "true" ]; then
-            echo "required=true" >> "$GITHUB_OUTPUT"
-            echo "[RUN] build required: upstream main changed"
-          elif [ "$HAS_TAG" = "true" ] && [ "$RELEASE_EXISTS" != "true" ]; then
-            echo "required=true" >> "$GITHUB_OUTPUT"
-            echo "[RUN] build required: upstream release ${{ steps.release.outputs.tag }} is missing"
-          else
-            echo "required=false" >> "$GITHUB_OUTPUT"
-            echo "[SKIP] no build/release work required"
-          fi
-
-      # ---------------------------------------------------------
-      # Save local files which must NEVER be overwritten.
+      # These files MUST survive git read-tree.
       # ---------------------------------------------------------
       - name: Save protected local files
         if: steps.upstream.outputs.changed == 'true'
@@ -167,29 +90,37 @@ jobs:
           rm -rf /tmp/local-protected
           mkdir -p /tmp/local-protected
 
+          # Protect mod/
           if [ -d mod ]; then
             cp -a mod /tmp/local-protected/mod
             echo "[protect] mod/"
           fi
 
+          # Protect ci.yml
           if [ -f .github/workflows/ci.yml ]; then
             mkdir -p /tmp/local-protected/.github/workflows
+
             cp .github/workflows/ci.yml \
               /tmp/local-protected/.github/workflows/ci.yml
+
             echo "[protect] .github/workflows/ci.yml"
           fi
 
+          # Protect THIS workflow.
           if [ -f .github/workflows/upstream-sync.yml ]; then
             mkdir -p /tmp/local-protected/.github/workflows
+
             cp .github/workflows/upstream-sync.yml \
               /tmp/local-protected/.github/workflows/upstream-sync.yml
+
             echo "[protect] .github/workflows/upstream-sync.yml"
           else
-            echo "[WARN] upstream-sync.yml is already missing before sync"
+            echo "[FAIL] upstream-sync.yml not found before sync"
+            exit 1
           fi
 
       # ---------------------------------------------------------
-      # Replace working tree with upstream and restore local files.
+      # Sync upstream
       # ---------------------------------------------------------
       - name: Sync upstream
         if: steps.upstream.outputs.changed == 'true'
@@ -198,34 +129,46 @@ jobs:
           set -euo pipefail
 
           echo "[sync] synchronizing upstream..."
+
+          # Replace working tree with upstream.
           git read-tree -u --reset upstream/main
 
           echo "[sync] restoring protected local files..."
 
+          # Restore mod/
           if [ -d /tmp/local-protected/mod ]; then
             rm -rf mod
             cp -a /tmp/local-protected/mod mod
             echo "[restore] mod/"
           fi
 
+          # Restore ci.yml
           if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
             mkdir -p .github/workflows
+
             cp /tmp/local-protected/.github/workflows/ci.yml \
               .github/workflows/ci.yml
+
             echo "[restore] .github/workflows/ci.yml"
           fi
 
+          # Restore THIS workflow.
           if [ -f /tmp/local-protected/.github/workflows/upstream-sync.yml ]; then
             mkdir -p .github/workflows
+
             cp /tmp/local-protected/.github/workflows/upstream-sync.yml \
               .github/workflows/upstream-sync.yml
-            echo "[restore] upstream-sync.yml"
+
+            echo "[restore] .github/workflows/upstream-sync.yml"
           fi
 
           echo "[OK] upstream synced"
 
       # ---------------------------------------------------------
-      # HARD verification of protected files.
+      # HARD verification
+      #
+      # If upstream-sync.yml disappeared or got replaced,
+      # immediately fail BEFORE build/commit.
       # ---------------------------------------------------------
       - name: Verify protected files
         if: steps.upstream.outputs.changed == 'true'
@@ -233,20 +176,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          test -f .github/workflows/upstream-sync.yml
-          test -f .github/workflows/ci.yml
+          echo "[verify] protected files..."
+
           test -d mod
           test -f mod/ModHook.kt
           test -f mod/apply.sh
           test -f mod/Module.patch
 
+          test -f .github/workflows/ci.yml
+          test -f .github/workflows/upstream-sync.yml
+
           echo "[OK] all protected files are present"
 
+          echo "[verify] workflow identity:"
+          head -n 5 .github/workflows/upstream-sync.yml
+
       # ---------------------------------------------------------
-      # Apply local modification.
+      # Apply local modification
       # ---------------------------------------------------------
       - name: Apply local mod
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -255,16 +204,20 @@ jobs:
           ./mod/apply.sh
 
       # ---------------------------------------------------------
-      # Verify API 102.
+      # Verify API 102 / mod files
       # ---------------------------------------------------------
       - name: Verify API 102
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Checking LibXposed API..."
-          grep -R '102.0.0' gradle/libs.versions.toml || true
+
+          grep -R \
+            '102.0.0' \
+            gradle/libs.versions.toml \
+            || true
 
           test -f mod/ModHook.kt
           test -f mod/apply.sh
@@ -273,71 +226,82 @@ jobs:
           echo "[OK] mod files present"
 
       # ---------------------------------------------------------
-      # Build environment.
+      # Build environment
       # ---------------------------------------------------------
       - name: Setup Java
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         uses: android-actions/setup-android@v3
 
       - name: Setup Gradle
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         uses: gradle/actions/setup-gradle@v4
 
       # ---------------------------------------------------------
-      # Build release APK.
+      # Build
       # ---------------------------------------------------------
       - name: Build release
-        if: steps.build.outputs.required == 'true'
+        if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           chmod +x gradlew
-          ./gradlew :app:assembleRelease --stacktrace --no-daemon
+
+          ./gradlew :app:assembleRelease --stacktrace
 
       # ---------------------------------------------------------
-      # Verify APK exists and expose its path.
-      # ---------------------------------------------------------
-      - name: Verify release APK
-        id: apk
-        if: steps.build.outputs.required == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="$(find app/build/outputs/apk/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            | head -n 1)"
-
-          if [ -z "$APK" ]; then
-            echo "[FAIL] Release APK not found"
-            exit 1
-          fi
-
-          echo "APK=$APK"
-          echo "apk=$APK" >> "$GITHUB_OUTPUT"
-
-      # ---------------------------------------------------------
-      # Record upstream SHA whenever main was synchronized.
+      # Record upstream SHA
       # ---------------------------------------------------------
       - name: Record upstream SHA
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
+
           echo "${{ steps.upstream.outputs.sha }}" > .upstream.sha
 
       # ---------------------------------------------------------
-      # Commit synchronized source.
+      # Final verification BEFORE commit
+      # ---------------------------------------------------------
+      - name: Final verification
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[verify] final files before commit..."
+
+          test -d mod
+          test -f mod/ModHook.kt
+          test -f mod/apply.sh
+          test -f mod/Module.patch
+
+          test -f .github/workflows/ci.yml
+          test -f .github/workflows/upstream-sync.yml
+
+          grep -Fq \
+            'name: Sync Upstream + Build' \
+            .github/workflows/upstream-sync.yml
+
+          grep -Fq \
+            'git read-tree -u --reset upstream/main' \
+            .github/workflows/upstream-sync.yml
+
+          grep -Fq \
+            'upstream-sync.yml' \
+            .github/workflows/upstream-sync.yml
+
+          echo "[OK] final protected-file verification passed"
+
+      # ---------------------------------------------------------
+      # Commit and push
       # ---------------------------------------------------------
       - name: Commit and push
         if: steps.upstream.outputs.changed == 'true'
@@ -352,47 +316,21 @@ jobs:
             exit 0
           fi
 
-          git commit -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+          echo "[commit] files:"
+          git diff --cached --name-status
+
+          git commit \
+            -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+
           git push origin HEAD:main
 
-      # ---------------------------------------------------------
-      # Publish actual APK directly to GitHub Release.
-      # ---------------------------------------------------------
-      - name: Create GitHub Release
-        if: >
-          steps.build.outputs.required == 'true' &&
-          steps.release.outputs.has_tag == 'true' &&
-          steps.existing_release.outputs.exists != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          APK="${{ steps.apk.outputs.apk }}"
-          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
-            echo "[FAIL] APK not found: $APK"
-            exit 1
-          fi
-
-          echo "[release] tag=$RELEASE_TAG"
-          echo "[release] apk=$APK"
-
-          gh release create "$RELEASE_TAG" \
-            "$APK" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "$RELEASE_TAG" \
-            --generate-notes
-
-          echo "[OK] GitHub Release created: $RELEASE_TAG"
+          echo "[OK] pushed to main"
 
       # ---------------------------------------------------------
-      # Upload Artifact separately for debugging / CI download.
-      # This may appear as a ZIP and is NOT the GitHub Release asset.
+      # Upload APK
       # ---------------------------------------------------------
-      - name: Upload APK Artifact
-        if: steps.build.outputs.required == 'true'
+      - name: Upload APK
+        if: steps.upstream.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: SwiftBackupPrem-release
