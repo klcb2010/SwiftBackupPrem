@@ -180,9 +180,12 @@ object ModHook : HookHandler {
         val session = sessionClass ?: return
         val instance = sessionInstance(session) ?: return
 
-        val getNon = findGetter(session, userClass)
+        val getNon = findGetter(session, userClass) ?: run {
+            Log.w(TAG, "session getter not found; cannot check current user")
+            return
+        }
         val existing = attempt("read current session user", silent = true) {
-            getNon?.invoke(instance)
+            getNon.invoke(instance)
         }
         if (existing != null) {
             return // already signed in (anonymous or Google)
@@ -260,9 +263,6 @@ object ModHook : HookHandler {
         val aClass = targets.anonUserClass
             ?: findClass(classLoader, ANON_A)
             ?: findClass(classLoader, ANON_A_DEFPACKAGE)
-            ?: return null
-
-  CKAGE)
             ?: return null
 
         // Primary: public static field named "b" (anonymous.a.b -> a$b singleton).
