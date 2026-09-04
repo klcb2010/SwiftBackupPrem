@@ -1,4 +1,3 @@
-
 name: Sync Upstream + Build + Release
 
 on:
@@ -79,10 +78,10 @@ jobs:
           git remote add upstream \
             https://github.com/s1ddhants1/SwiftBackupPrem.git
 
-          # 同步主分支
+          # 获取上游 main
           git fetch upstream main --depth=1
 
-          # 获取上游 v* Tag
+          # 获取上游所有 v* Tag
           git fetch upstream \
             '+refs/tags/v*:refs/tags/upstream-v*' \
             --force
@@ -720,12 +719,18 @@ jobs:
       # =========================================================
       # 20. Determine upstream release tag
       #
-      # 只认：
+      # 这里只判断上游：
       #
-      #   upstream 的 v* tag
-      #   并且该 tag 正好指向 upstream/main
+      #   upstream/main
       #
-      # 防止 main 比最新 release 更新时错误发布旧版本号。
+      # 是否正好对应一个：
+      #
+      #   v*
+      #
+      # Tag。
+      #
+      # 注意：
+      # 这里绝对不判断本仓库是否存在 Release。
       # =========================================================
       - name: Determine upstream release tag
         if: steps.decision.outputs.run == 'true'
@@ -740,6 +745,9 @@ jobs:
           echo "Determine upstream release tag"
           echo "================================================="
 
+          echo "Upstream main SHA:"
+          echo "$UPSTREAM_SHA"
+
           RELEASE_TAG=""
 
           while IFS= read -r tag; do
@@ -750,6 +758,8 @@ jobs:
               || true
             )"
 
+            echo
+            echo "Checking upstream tag:"
             echo "tag=$tag"
             echo "tag_sha=$TAG_SHA"
 
@@ -768,8 +778,10 @@ jobs:
             echo "release=false" >> "$GITHUB_OUTPUT"
 
             echo
-            echo "[INFO] upstream/main is not exactly a v* release tag"
-            echo "[INFO] no GitHub Release will be created"
+            echo "================================================="
+            echo "[INFO] No upstream v* tag matches upstream/main"
+            echo "[INFO] No GitHub Release will be created"
+            echo "================================================="
 
             exit 0
           fi
@@ -785,53 +797,148 @@ jobs:
           echo "================================================="
 
       # =========================================================
-      # 21. Check existing GitHub Release
+      # 21. Check EXISTING RELEASE IN THIS REPOSITORY
+      #
+      # 关键修复：
+      #
+      # 必须显式指定：
+      #
+      #   $GITHUB_REPOSITORY
+      #
+      # 绝不使用上游仓库作为判断对象。
       # =========================================================
       - name: Check existing GitHub Release
         if: steps.decision.outputs.run == 'true' && steps.release.outputs.release == 'true'
         id: check_release
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Checking GitHub Release: $TAG_NAME"
+          echo "================================================="
+          echo "Check existing GitHub Release"
+          echo "================================================="
 
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+          echo "Repository:"
+          echo "$REPOSITORY"
+
+          echo
+          echo "Release tag:"
+          echo "$TAG_NAME"
+
+          if gh release view "$TAG_NAME" \
+            --repo "$REPOSITORY" \
+            >/dev/null 2>&1; then
+
             echo "exists=true" >> "$GITHUB_OUTPUT"
 
             echo
-            echo "[SKIP] GitHub Release already exists:"
-            echo "$TAG_NAME"
+            echo "================================================="
+            echo "[SKIP] Release already exists in THIS repository"
+            echo "Repository: $REPOSITORY"
+            echo "Tag: $TAG_NAME"
+            echo "================================================="
 
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
 
             echo
-            echo "[OK] GitHub Release does not exist"
-            echo "[RUN] release will be created"
+            echo "================================================="
+            echo "[OK] Release does not exist in THIS repository"
+            echo "Repository: $REPOSITORY"
+            echo "Tag: $TAG_NAME"
+            echo "[RUN] Release will be created"
+            echo "================================================="
           fi
 
       # =========================================================
-      # 22. Create GitHub Release
+      # 22. Check existing local Tag
       #
-      # 关键：
+      # Release 不存在时：
       #
-      # 不推 Tag 再等待另一个 Workflow。
+      # - 没有 Tag -> 正常创建
+      # - 已有 Tag 且指向当前 HEAD -> 可以继续
+      # - 已有 Tag 但指向其他 Commit -> 直接失败
       #
-      # 直接在本次已经验证成功的 HEAD 上创建 Release。
+      # 防止错误覆盖已有版本。
+      # =========================================================
+      - name: Check existing local tag
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists != 'true'
+        id: check_tag
+        env:
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Check local tag"
+          echo "================================================="
+
+          CURRENT_HEAD="$(git rev-parse HEAD)"
+
+          echo "Tag : $TAG_NAME"
+          echo "HEAD: $CURRENT_HEAD"
+
+          if git rev-parse "refs/tags/$TAG_NAME^{commit}" >/dev/null 2>&1; then
+
+            TAG_SHA="$(
+              git rev-parse "refs/tags/$TAG_NAME^{commit}"
+            )"
+
+            echo "Existing tag SHA:"
+            echo "$TAG_SHA"
+
+            if [ "$TAG_SHA" != "$CURRENT_HEAD" ]; then
+              echo
+              echo "[FAIL] local tag already exists on another commit"
+              echo "[FAIL] refusing to overwrite tag"
+              exit 1
+            fi
+
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "[OK] local tag already points to current HEAD"
+
+          else
+
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "[OK] local tag does not exist"
+            echo "[OK] GitHub Release will create it"
+          fi
+
+      # =========================================================
+      # 23. Create GitHub Release
       #
-      # 因此：
+      # 关键逻辑：
       #
-      # ModHook 验证
-      #      ↓
-      # Release APK
-      #      ↓
-      # GitHub Release
+      # 当前 Workflow 已经：
       #
-      # 三者一定属于同一次构建。
+      #   1. 同步 upstream
+      #   2. 恢复 mod
+      #   3. apply.sh
+      #   4. ModHook 验证
+      #   5. Gradle Release Build
+      #   6. APK dex 验证
+      #   7. Commit
+      #   8. Push main
+      #
+      # 到这里才创建：
+      #
+      #   Tag + Release + APK
+      #
+      # 直接以当前 HEAD 为目标。
+      #
+      # 不再等待 ci.yml。
       # =========================================================
       - name: Create GitHub Release
         if: >
@@ -840,6 +947,7 @@ jobs:
           steps.check_release.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
@@ -865,8 +973,9 @@ jobs:
           echo "Create GitHub Release"
           echo "================================================="
 
-          echo "Tag : $TAG_NAME"
-          echo "APK : $APK"
+          echo "Repository : $REPOSITORY"
+          echo "Tag        : $TAG_NAME"
+          echo "APK        : $APK"
 
           PRERELEASE=false
 
@@ -876,33 +985,81 @@ jobs:
               ;;
           esac
 
-          echo "Prerelease: $PRERELEASE"
+          echo "Prerelease : $PRERELEASE"
 
-          gh release create "$TAG_NAME" \
-            --target HEAD \
-            --title "$TAG_NAME" \
-            --generate-notes \
-            $( [ "$PRERELEASE" = "true" ] && echo "--prerelease" ) \
-            "$APK"
+          echo
+          echo "[1/2] Creating Tag + Release..."
 
-          # 如果 mapping 存在则追加上传
+          if [ "$PRERELEASE" = "true" ]; then
+
+            gh release create "$TAG_NAME" \
+              --repo "$REPOSITORY" \
+              --target HEAD \
+              --title "$TAG_NAME" \
+              --generate-notes \
+              --prerelease \
+              "$APK"
+
+          else
+
+            gh release create "$TAG_NAME" \
+              --repo "$REPOSITORY" \
+              --target HEAD \
+              --title "$TAG_NAME" \
+              --generate-notes \
+              "$APK"
+
+          fi
+
+          echo
+          echo "[OK] Tag + Release created"
+
+          # =====================================================
+          # 上传 mapping
+          # =====================================================
+
           MAPPING="app/build/outputs/mapping/release/mapping.txt"
 
           if [ -f "$MAPPING" ]; then
+
+            echo
+            echo "[2/2] Uploading mapping.txt..."
+
             gh release upload \
               "$TAG_NAME" \
               "$MAPPING" \
+              --repo "$REPOSITORY" \
               --clobber
+
+            echo "[OK] mapping.txt uploaded"
+
+          else
+
+            echo
+            echo "[INFO] mapping.txt not found"
+            echo "[INFO] skipping mapping upload"
+
           fi
 
           echo
           echo "================================================="
-          echo "[OK] GitHub Release created"
-          echo "Tag: $TAG_NAME"
+          echo "[OK] GitHub Release created successfully"
           echo "================================================="
 
+          echo
+          echo "Repository:"
+          echo "$REPOSITORY"
+
+          echo
+          echo "Tag:"
+          echo "$TAG_NAME"
+
+          echo
+          echo "APK:"
+          echo "$APK"
+
       # =========================================================
-      # 23. Release skipped
+      # 24. Release skipped
       # =========================================================
       - name: Release skipped
         if: >
@@ -917,11 +1074,15 @@ jobs:
           echo "Release already exists"
           echo "================================================="
 
+          echo "Repository: $GITHUB_REPOSITORY"
           echo "Tag: ${{ steps.release.outputs.tag }}"
-          echo "Publishing skipped."
+
+          echo
+          echo "[INFO] Publishing skipped."
+          echo "[INFO] Existing Release belongs to this repository."
 
       # =========================================================
-      # 24. Upload APK artifact
+      # 25. Upload APK artifact
       #
       # 即使没有 Release，也保留 Actions Artifact。
       # =========================================================
@@ -934,4 +1095,3 @@ jobs:
             app/build/outputs/apk/release/*.apk
             app/build/outputs/mapping/release/*
           if-no-files-found: warn
-
