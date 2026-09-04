@@ -17,38 +17,82 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ---------------------------------------------------------
-      # Checkout
-      # ---------------------------------------------------------
+      # =========================================================
+      # 1. Checkout 当前触发 workflow 的 commit
+      # =========================================================
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
+          ref: ${{ github.ref }}
 
-      # ---------------------------------------------------------
-      # Git
-      # ---------------------------------------------------------
+      # =========================================================
+      # 2. Git 配置
+      # =========================================================
       - name: Configure Git
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # ---------------------------------------------------------
-      # Upstream
-      # ---------------------------------------------------------
+      # =========================================================
+      # 3. 显示当前 workflow 实际运行版本
+      #
+      # 这个非常重要：
+      # 防止误以为 GitHub 正在运行 main 上的新版 workflow。
+      # =========================================================
+      - name: Show workflow revision
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "GitHub workflow runtime information"
+          echo "================================================="
+          echo "Repository : $GITHUB_REPOSITORY"
+          echo "Ref        : $GITHUB_REF"
+          echo "SHA        : $GITHUB_SHA"
+          echo "Workflow   : $GITHUB_WORKFLOW"
+          echo "Run ID     : $GITHUB_RUN_ID"
+          echo "Run Number : $GITHUB_RUN_NUMBER"
+          echo "Actor      : $GITHUB_ACTOR"
+          echo "Event      : $GITHUB_EVENT_NAME"
+          echo "================================================="
+
+          echo
+          echo "[current commit]"
+          git rev-parse HEAD
+
+          echo
+          echo "[workflow file]"
+          test -f .github/workflows/upstream-sync.yml
+          head -n 10 .github/workflows/upstream-sync.yml
+
+      # =========================================================
+      # 4. 添加 upstream
+      # =========================================================
       - name: Add upstream
         shell: bash
         run: |
           set -euo pipefail
 
           git remote remove upstream 2>/dev/null || true
-          git remote add upstream https://github.com/s1ddhants1/SwiftBackupPrem.git
+
+          git remote add upstream \
+            https://github.com/s1ddhants1/SwiftBackupPrem.git
+
           git fetch upstream main --depth=1
 
-      # ---------------------------------------------------------
-      # Check upstream change
-      # ---------------------------------------------------------
+          echo
+          echo "[upstream]"
+          git rev-parse upstream/main
+
+      # =========================================================
+      # 5. 判断 upstream 是否变化
+      # =========================================================
       - name: Check upstream change
         id: upstream
         shell: bash
@@ -56,6 +100,7 @@ jobs:
           set -euo pipefail
 
           UPSTREAM_SHA="$(git rev-parse upstream/main)"
+
           echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
 
           if [ -f .upstream.sha ]; then
@@ -69,18 +114,19 @@ jobs:
 
           if [ "$LAST_SHA" = "$UPSTREAM_SHA" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo
             echo "[SKIP] upstream unchanged"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo
             echo "[RUN] upstream changed"
           fi
 
-      # ---------------------------------------------------------
-      # Save protected local files
+      # =========================================================
+      # 6. 保存本地 mod 和 workflow
       #
-      # IMPORTANT:
-      # These files MUST survive git read-tree.
-      # ---------------------------------------------------------
+      # 这些文件不能被 upstream 覆盖。
+      # =========================================================
       - name: Save protected local files
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
@@ -88,95 +134,105 @@ jobs:
           set -euo pipefail
 
           rm -rf /tmp/local-protected
-          mkdir -p /tmp/local-protected
+          mkdir -p /tmp/local-protected/.github/workflows
 
-          # Protect mod/
+          # -----------------------------------------------------
+          # mod/
+          # -----------------------------------------------------
           if [ -d mod ]; then
             cp -a mod /tmp/local-protected/mod
             echo "[protect] mod/"
+          else
+            echo "[FAIL] mod/ not found"
+            exit 1
           fi
 
-          # Protect ci.yml
+          # -----------------------------------------------------
+          # ci.yml
+          # -----------------------------------------------------
           if [ -f .github/workflows/ci.yml ]; then
-            mkdir -p /tmp/local-protected/.github/workflows
-
-            cp .github/workflows/ci.yml \
+            cp \
+              .github/workflows/ci.yml \
               /tmp/local-protected/.github/workflows/ci.yml
 
             echo "[protect] .github/workflows/ci.yml"
           fi
 
-          # Protect THIS workflow.
+          # -----------------------------------------------------
+          # upstream-sync.yml
+          # -----------------------------------------------------
           if [ -f .github/workflows/upstream-sync.yml ]; then
-            mkdir -p /tmp/local-protected/.github/workflows
-
-            cp .github/workflows/upstream-sync.yml \
+            cp \
+              .github/workflows/upstream-sync.yml \
               /tmp/local-protected/.github/workflows/upstream-sync.yml
 
             echo "[protect] .github/workflows/upstream-sync.yml"
           else
-            echo "[FAIL] upstream-sync.yml not found before sync"
+            echo "[FAIL] upstream-sync.yml not found"
             exit 1
           fi
 
-      # ---------------------------------------------------------
-      # Sync upstream
-      # ---------------------------------------------------------
+      # =========================================================
+      # 7. 同步 upstream
+      # =========================================================
       - name: Sync upstream
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "[sync] synchronizing upstream..."
+          echo "[sync] replacing working tree with upstream/main..."
 
-          # Replace working tree with upstream.
           git read-tree -u --reset upstream/main
 
           echo "[sync] restoring protected local files..."
 
-          # Restore mod/
-          if [ -d /tmp/local-protected/mod ]; then
-            rm -rf mod
-            cp -a /tmp/local-protected/mod mod
-            echo "[restore] mod/"
-          fi
+          # -----------------------------------------------------
+          # mod/
+          # -----------------------------------------------------
+          rm -rf mod
 
-          # Restore ci.yml
+          cp -a \
+            /tmp/local-protected/mod \
+            mod
+
+          echo "[restore] mod/"
+
+          # -----------------------------------------------------
+          # ci.yml
+          # -----------------------------------------------------
           if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
             mkdir -p .github/workflows
 
-            cp /tmp/local-protected/.github/workflows/ci.yml \
+            cp \
+              /tmp/local-protected/.github/workflows/ci.yml \
               .github/workflows/ci.yml
 
             echo "[restore] .github/workflows/ci.yml"
           fi
 
-          # Restore THIS workflow.
-          if [ -f /tmp/local-protected/.github/workflows/upstream-sync.yml ]; then
-            mkdir -p .github/workflows
+          # -----------------------------------------------------
+          # upstream-sync.yml
+          # -----------------------------------------------------
+          cp \
+            /tmp/local-protected/.github/workflows/upstream-sync.yml \
+            .github/workflows/upstream-sync.yml
 
-            cp /tmp/local-protected/.github/workflows/upstream-sync.yml \
-              .github/workflows/upstream-sync.yml
+          echo "[restore] .github/workflows/upstream-sync.yml"
 
-            echo "[restore] .github/workflows/upstream-sync.yml"
-          fi
+          echo
+          echo "[OK] upstream synchronized"
 
-          echo "[OK] upstream synced"
-
-      # ---------------------------------------------------------
-      # HARD verification
-      #
-      # If upstream-sync.yml disappeared or got replaced,
-      # immediately fail BEFORE build/commit.
-      # ---------------------------------------------------------
+      # =========================================================
+      # 8. 验证 protected files
+      # =========================================================
       - name: Verify protected files
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "[verify] protected files..."
+          echo "[verify] checking protected files..."
 
           test -d mod
           test -f mod/ModHook.kt
@@ -186,48 +242,78 @@ jobs:
           test -f .github/workflows/ci.yml
           test -f .github/workflows/upstream-sync.yml
 
-          echo "[OK] all protected files are present"
+          echo "[OK] protected files exist"
 
-          echo "[verify] workflow identity:"
-          head -n 5 .github/workflows/upstream-sync.yml
+          echo
+          echo "================================================="
+          echo "Current upstream-sync.yml"
+          echo "================================================="
 
-      # ---------------------------------------------------------
-      # Apply local modification
-      # ---------------------------------------------------------
+          sed -n '1,30p' .github/workflows/upstream-sync.yml
+
+      # =========================================================
+      # 9. 应用本地 mod
+      # =========================================================
       - name: Apply local mod
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "[mod] applying local modification..."
+
           chmod +x mod/apply.sh
+
           ./mod/apply.sh
 
-      # ---------------------------------------------------------
-      # Verify API 102 / mod files
-      # ---------------------------------------------------------
+          echo "[OK] local mod applied"
+
+      # =========================================================
+      # 10. 验证 mod
+      # =========================================================
+      - name: Verify mod
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "[verify] checking mod..."
+
+          test -f mod/ModHook.kt
+          test -f mod/apply.sh
+          test -f mod/Module.patch
+
+          echo
+          echo "[mod files]"
+          find mod -maxdepth 2 -type f -print | sort
+
+          echo
+          echo "[OK] mod verification passed"
+
+      # =========================================================
+      # 11. 检查 LibXposed API
+      # =========================================================
       - name: Verify API 102
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Checking LibXposed API..."
+          echo "[verify] checking LibXposed API..."
 
-          grep -R \
-            '102.0.0' \
-            gradle/libs.versions.toml \
-            || true
+          if [ -f gradle/libs.versions.toml ]; then
+            grep -n \
+              '102.0.0' \
+              gradle/libs.versions.toml \
+              || true
+          fi
 
-          test -f mod/ModHook.kt
-          test -f mod/apply.sh
-          test -f mod/Module.patch
+          echo
+          echo "[OK] API verification finished"
 
-          echo "[OK] mod files present"
-
-      # ---------------------------------------------------------
-      # Build environment
-      # ---------------------------------------------------------
+      # =========================================================
+      # 12. Java
+      # =========================================================
       - name: Setup Java
         if: steps.upstream.outputs.changed == 'true'
         uses: actions/setup-java@v4
@@ -235,17 +321,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # =========================================================
+      # 13. Android SDK
+      # =========================================================
       - name: Setup Android SDK
         if: steps.upstream.outputs.changed == 'true'
         uses: android-actions/setup-android@v3
 
+      # =========================================================
+      # 14. Gradle
+      # =========================================================
       - name: Setup Gradle
         if: steps.upstream.outputs.changed == 'true'
         uses: gradle/actions/setup-gradle@v4
 
-      # ---------------------------------------------------------
-      # Build
-      # ---------------------------------------------------------
+      # =========================================================
+      # 15. Build
+      # =========================================================
       - name: Build release
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
@@ -254,11 +346,17 @@ jobs:
 
           chmod +x gradlew
 
-          ./gradlew :app:assembleRelease --stacktrace
+          echo "[build] starting release build..."
 
-      # ---------------------------------------------------------
-      # Record upstream SHA
-      # ---------------------------------------------------------
+          ./gradlew \
+            :app:assembleRelease \
+            --stacktrace
+
+          echo "[OK] release build completed"
+
+      # =========================================================
+      # 16. 写入 upstream SHA
+      # =========================================================
       - name: Record upstream SHA
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
@@ -267,43 +365,62 @@ jobs:
 
           echo "${{ steps.upstream.outputs.sha }}" > .upstream.sha
 
-      # ---------------------------------------------------------
-      # Final verification BEFORE commit
-      # ---------------------------------------------------------
+          echo "[upstream.sha]"
+          cat .upstream.sha
+
+      # =========================================================
+      # 17. 最终验证
+      #
+      # 注意：
+      # 这里验证的是“准备提交到 main 的最终工作树”。
+      # =========================================================
       - name: Final verification
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "[verify] final files before commit..."
+          echo
+          echo "================================================="
+          echo "Final verification"
+          echo "================================================="
 
+          # mod
           test -d mod
           test -f mod/ModHook.kt
           test -f mod/apply.sh
           test -f mod/Module.patch
 
+          # workflows
           test -f .github/workflows/ci.yml
           test -f .github/workflows/upstream-sync.yml
 
+          # workflow identity
           grep -Fq \
             'name: Sync Upstream + Build' \
             .github/workflows/upstream-sync.yml
 
+          # upstream reset
           grep -Fq \
             'git read-tree -u --reset upstream/main' \
             .github/workflows/upstream-sync.yml
 
+          # self protection
           grep -Fq \
             'upstream-sync.yml' \
             .github/workflows/upstream-sync.yml
 
+          echo
           echo "[OK] final protected-file verification passed"
 
-      # ---------------------------------------------------------
-      # Commit and push
-      # ---------------------------------------------------------
-      - name: Commit and push
+          echo
+          echo "[git status]"
+          git status --short
+
+      # =========================================================
+      # 18. Commit
+      # =========================================================
+      - name: Commit changes
         if: steps.upstream.outputs.changed == 'true'
         shell: bash
         run: |
@@ -312,23 +429,36 @@ jobs:
           git add -A
 
           if git diff --cached --quiet; then
-            echo "[SKIP] no changes to commit"
+            echo "[SKIP] nothing to commit"
             exit 0
           fi
 
-          echo "[commit] files:"
+          echo
+          echo "================================================="
+          echo "Files to commit"
+          echo "================================================="
+
           git diff --cached --name-status
 
           git commit \
             -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
 
+      # =========================================================
+      # 19. Push
+      # =========================================================
+      - name: Push changes
+        if: steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
           git push origin HEAD:main
 
           echo "[OK] pushed to main"
 
-      # ---------------------------------------------------------
-      # Upload APK
-      # ---------------------------------------------------------
+      # =========================================================
+      # 20. 上传 APK
+      # =========================================================
       - name: Upload APK
         if: steps.upstream.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
