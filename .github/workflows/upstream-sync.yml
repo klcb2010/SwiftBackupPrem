@@ -118,10 +118,13 @@ jobs:
           fi
 
       # =========================================================
-      # 6. 判断是否手动运行
+      # 6. 判断是否执行
       #
-      # workflow_dispatch：
-      # 即使 upstream 没变化，也强制执行 mod + build。
+      # 手动运行：
+      #   永远执行 mod + build
+      #
+      # 定时运行：
+      #   upstream 有变化才执行
       # =========================================================
       - name: Decide execution
         id: decision
@@ -152,7 +155,7 @@ jobs:
       # =========================================================
       # 7. 保存本地文件
       #
-      # 只有真正同步 upstream 时才保存。
+      # 只有真正同步 upstream 时执行。
       # =========================================================
       - name: Save protected local files
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -201,9 +204,6 @@ jobs:
 
       # =========================================================
       # 8. 同步 upstream
-      #
-      # upstream 没变化：
-      # 不执行 read-tree，直接使用当前仓库的 mod。
       # =========================================================
       - name: Sync upstream
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -254,7 +254,7 @@ jobs:
           echo "[OK] upstream synchronized"
 
       # =========================================================
-      # 9. 验证本地 mod 文件
+      # 9. 验证本地 mod
       # =========================================================
       - name: Verify local mod
         if: steps.decision.outputs.run == 'true'
@@ -299,13 +299,19 @@ jobs:
           echo "[OK] local mod applied"
 
       # =========================================================
-      # 11. 验证 ModHook 是否真正注入源码
+      # 11. 验证生成后的 ModHook
       #
-      # 这一关非常重要：
+      # 注意：
+      # 不能全局禁止 XposedModule。
       #
-      # mod/ModHook.kt 存在 ≠ ModHook 已经进入 app 源码。
+      # 当前项目的 Module.kt、HookHandler、其他 Hook
+      # 本身合法使用 XposedModule。
       #
-      # 这里检查 apply.sh 执行后的实际源码。
+      # 这里只检查：
+      #   1. ModHook 是否真的进入 app/src
+      #   2. ModHook 是否为空
+      #   3. ModHook 是否错误地重新使用旧入口
+      #   4. Module.kt 是否仍然引用 ModHook
       # =========================================================
       - name: Verify generated ModHook
         if: steps.decision.outputs.run == 'true'
@@ -317,10 +323,19 @@ jobs:
           echo "Verify generated ModHook"
           echo "================================================="
 
+          # -----------------------------------------------------
+          # 1. 查找生成后的 ModHook.kt
+          # -----------------------------------------------------
           echo
           echo "[1/5] Searching generated ModHook.kt..."
 
-          MODHOOK_FILES="$(find app/src -type f -name 'ModHook.kt' -print 2>/dev/null || true)"
+          MODHOOK_FILES="$(
+            find app/src \
+              -type f \
+              -name 'ModHook.kt' \
+              -print \
+              2>/dev/null || true
+          )"
 
           if [ -z "$MODHOOK_FILES" ]; then
             echo "[FAIL] ModHook.kt was not injected into app/src"
@@ -332,10 +347,15 @@ jobs:
 
           echo "$MODHOOK_FILES"
 
-          MODHOOK_COUNT="$(printf '%s\n' "$MODHOOK_FILES" | sed '/^$/d' | wc -l)"
+          MODHOOK_COUNT="$(
+            printf '%s\n' "$MODHOOK_FILES" \
+              | sed '/^$/d' \
+              | wc -l
+          )"
 
           if [ "$MODHOOK_COUNT" -ne 1 ]; then
-            echo "[FAIL] expected exactly one generated ModHook.kt, found $MODHOOK_COUNT"
+            echo "[FAIL] expected exactly one generated ModHook.kt"
+            echo "[FAIL] found: $MODHOOK_COUNT"
             exit 1
           fi
 
@@ -345,22 +365,82 @@ jobs:
           echo "[OK] generated ModHook:"
           echo "$MODHOOK_FILE"
 
+          # -----------------------------------------------------
+          # 2. 检查文件不是空文件
+          # -----------------------------------------------------
           echo
           echo "[2/5] Checking ModHook content..."
 
           test -s "$MODHOOK_FILE"
 
-          if grep -Eq 'applyLocalHooks[[:space:]]*\([[:space:]]*\)[[:space:]]*\{[[:space:]]*\}' "$MODHOOK_FILE"; then
-            echo "[FAIL] ModHook appears to contain an empty applyLocalHooks()"
+          echo "[OK] ModHook.kt is not empty"
+
+          # -----------------------------------------------------
+          # 3. 检查是否仍然是空实现
+          # -----------------------------------------------------
+          echo
+          echo "[3/5] Checking applyLocalHooks implementation..."
+
+          if grep -Eq \
+            'fun[[:space:]]+applyLocalHooks[[:space:]]*\([^)]*\)[[:space:]]*\{[[:space:]]*\}' \
+            "$MODHOOK_FILE"; then
+
+            echo "[FAIL] applyLocalHooks() appears to be empty"
             exit 1
           fi
 
-          echo "[OK] ModHook is not an empty implementation"
+          echo "[OK] applyLocalHooks() is not an empty implementation"
 
+          # -----------------------------------------------------
+          # 4. 只检查 ModHook 自己
+          #
+          # 当前项目其他 Hook 可以正常依赖 XposedModule。
+          #
+          # 这里只禁止 ModHook 重新成为旧 XposedModule 入口。
+          # -----------------------------------------------------
           echo
-          echo "[3/5] Checking Module.kt integration..."
+          echo "[4/5] Checking ModHook entry..."
 
-          MODULE_FILES="$(find app/src -type f -name 'Module.kt' -print 2>/dev/null || true)"
+          if grep -Eq \
+            'import[[:space:]]+io\.github\.libxposed\.api\.XposedModule' \
+            "$MODHOOK_FILE"; then
+
+            echo "[FAIL] ModHook.kt imports XposedModule"
+            echo "[FAIL] ModHook must use the current project HookHandler architecture"
+            exit 1
+          fi
+
+          if grep -Eq \
+            ':[[:space:]]*XposedModule([[:space:]]*\(|[[:space:]]*$)' \
+            "$MODHOOK_FILE"; then
+
+            echo "[FAIL] ModHook.kt declares XposedModule as its base class"
+            exit 1
+          fi
+
+          if grep -Fq \
+            'PackageLoadedParam' \
+            "$MODHOOK_FILE"; then
+
+            echo "[FAIL] ModHook.kt still uses PackageLoadedParam"
+            exit 1
+          fi
+
+          echo "[OK] ModHook does not declare the legacy XposedModule entry"
+
+          # -----------------------------------------------------
+          # 5. 检查 Module.kt 是否还连接 ModHook
+          # -----------------------------------------------------
+          echo
+          echo "[5/5] Checking Module.kt integration..."
+
+          MODULE_FILES="$(
+            find app/src \
+              -type f \
+              -name 'Module.kt' \
+              -print \
+              2>/dev/null || true
+          )"
 
           if [ -z "$MODULE_FILES" ]; then
             echo "[FAIL] Module.kt not found under app/src"
@@ -372,8 +452,13 @@ jobs:
           while IFS= read -r module_file; do
             [ -n "$module_file" ] || continue
 
-            if grep -Eq 'ModHook[[:space:]]*\.' "$module_file"; then
-              echo "[OK] ModHook reference found in $module_file"
+            if grep -Eq \
+              'ModHook[[:space:]]*\.' \
+              "$module_file"; then
+
+              echo "[OK] ModHook reference found in:"
+              echo "      $module_file"
+
               MODULE_MATCH=true
             fi
           done <<< "$MODULE_FILES"
@@ -382,42 +467,6 @@ jobs:
             echo "[FAIL] no ModHook integration found in generated Module.kt"
             exit 1
           fi
-
-          echo
-          echo "[4/5] Checking for accidental legacy entry..."
-
-          if grep -R \
-            --include='*.kt' \
-            --include='*.java' \
-            -nE \
-            'import[[:space:]]+io\.github\.libxposed\.api\.XposedModule|extends[[:space:]]+XposedModule|:[[:space:]]*XposedModule' \
-            app/src \
-            2>/dev/null; then
-
-            echo
-            echo "[FAIL] legacy XposedModule entry detected in generated app source"
-            exit 1
-          fi
-
-          echo "[OK] no legacy XposedModule entry detected"
-
-          echo
-          echo "[5/5] Checking for legacy PackageLoadedParam..."
-
-          if grep -R \
-            --include='*.kt' \
-            --include='*.java' \
-            -n \
-            'PackageLoadedParam' \
-            app/src \
-            2>/dev/null; then
-
-            echo
-            echo "[FAIL] legacy PackageLoadedParam detected in generated app source"
-            exit 1
-          fi
-
-          echo "[OK] no legacy PackageLoadedParam detected"
 
           echo
           echo "================================================="
@@ -473,11 +522,7 @@ jobs:
       # =========================================================
       # 16. 编译后验证 APK
       #
-      # 目的：
-      # 确认 ModHook 不只是存在于源码，而是真的进入最终 APK。
-      #
-      # 不依赖 apktool。
-      # 直接读取 APK 内 classes*.dex 的字符串。
+      # 确认 ModHook 已经进入最终 APK 的 classes*.dex。
       # =========================================================
       - name: Verify APK integration
         if: steps.decision.outputs.run == 'true'
@@ -491,39 +536,72 @@ jobs:
 
           APK_DIR="app/build/outputs/apk/release"
 
+          # -----------------------------------------------------
+          # 1. APK 是否存在
+          # -----------------------------------------------------
           echo
-          echo "[APK directory]"
-          ls -lah "$APK_DIR"
+          echo "[1/4] Checking release APK..."
 
-          APK_COUNT="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
+          if [ ! -d "$APK_DIR" ]; then
+            echo "[FAIL] release output directory not found:"
+            echo "$APK_DIR"
+            exit 1
+          fi
+
+          APK_COUNT="$(
+            find "$APK_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | wc -l
+          )"
 
           if [ "$APK_COUNT" -lt 1 ]; then
             echo "[FAIL] no release APK found"
             exit 1
           fi
 
-          APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | sort | head -n 1)"
+          APK="$(
+            find "$APK_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | sort \
+              | head -n 1
+          )"
 
-          echo
-          echo "[APK]"
+          echo "[OK] APK found:"
           echo "$APK"
 
           echo
           echo "[APK size]"
           stat -c '%n %s bytes' "$APK"
 
+          # -----------------------------------------------------
+          # 2. dex 是否存在
+          # -----------------------------------------------------
           echo
-          echo "[APK dex files]"
+          echo "[2/4] Checking APK dex files..."
 
-          unzip -l "$APK" \
-            | grep -E 'classes([0-9]+)?\.dex$' \
-            || {
-              echo "[FAIL] no classes*.dex found in APK"
-              exit 1
-            }
+          DEX_LIST="$(
+            unzip -l "$APK" \
+              | awk '{print $4}' \
+              | grep -E '^classes([0-9]+)?\.dex$' \
+              | sort || true
+          )"
 
+          if [ -z "$DEX_LIST" ]; then
+            echo "[FAIL] no classes*.dex found in APK"
+            exit 1
+          fi
+
+          echo "$DEX_LIST"
+
+          # -----------------------------------------------------
+          # 3. 搜索 ModHook
+          # -----------------------------------------------------
           echo
-          echo "[Searching ModHook in compiled dex...]"
+          echo "[3/4] Searching ModHook in compiled dex..."
 
           FOUND=false
 
@@ -540,12 +618,8 @@ jobs:
               echo "[OK] ModHook found in $dex"
               FOUND=true
             fi
-          done < <(
-            unzip -l "$APK" \
-              | awk '{print $4}' \
-              | grep -E '^classes([0-9]+)?\.dex$' \
-              | sort
-          )
+
+          done <<< "$DEX_LIST"
 
           if [ "$FOUND" != "true" ]; then
             echo
@@ -553,6 +627,9 @@ jobs:
             exit 1
           fi
 
+          # -----------------------------------------------------
+          # 4. 完成
+          # -----------------------------------------------------
           echo
           echo "================================================="
           echo "[OK] ModHook is present in final APK"
@@ -562,7 +639,6 @@ jobs:
       # 17. 更新 upstream SHA
       #
       # 只有真正同步 upstream 才更新。
-      # 手动测试 + upstream 未变化不会修改它。
       # =========================================================
       - name: Record upstream SHA
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -624,14 +700,32 @@ jobs:
             .github/workflows/upstream-sync.yml
 
           # -----------------------------------------------------
-          # generated APK
+          # generated ModHook
           # -----------------------------------------------------
-          APK_COUNT="$(find app/build/outputs/apk/release \
-            -maxdepth 1 \
-            -type f \
-            -name '*.apk' \
-            2>/dev/null \
-            | wc -l)"
+          MODHOOK_FILES="$(
+            find app/src \
+              -type f \
+              -name 'ModHook.kt' \
+              -print \
+              2>/dev/null || true
+          )"
+
+          if [ -z "$MODHOOK_FILES" ]; then
+            echo "[FAIL] generated ModHook.kt not found"
+            exit 1
+          fi
+
+          # -----------------------------------------------------
+          # release APK
+          # -----------------------------------------------------
+          APK_COUNT="$(
+            find app/build/outputs/apk/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              2>/dev/null \
+              | wc -l
+          )"
 
           if [ "$APK_COUNT" -lt 1 ]; then
             echo "[FAIL] final APK not found"
@@ -639,6 +733,7 @@ jobs:
           fi
 
           echo
+          echo "[OK] generated ModHook found"
           echo "[OK] final APK count: $APK_COUNT"
 
           echo
@@ -653,8 +748,7 @@ jobs:
       # =========================================================
       # 19. Commit and push
       #
-      # 只有 upstream 真变化时才提交同步结果。
-      # 手动测试不会产生无意义 commit。
+      # 只有 upstream 真变化时才提交。
       # =========================================================
       - name: Commit and push
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
