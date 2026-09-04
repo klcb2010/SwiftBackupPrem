@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      API 100+ 模块规范：
+      - 模块名 = android:label
+      - 模块描述 = android:description
+      - 入口类列表 = META-INF/xposed/java_init.list
+      - 作用域列表 = META-INF/xposed/scope.list
+      - 版本声明   = META-INF/xposed/module.prop
+      不再使用 xposedmodule / xposedscope meta-data。
+    -->
+    <application
+        android:label="@string/app_name"
+        android:description="@string/module_description"
+        android:allowBackup="false"
+        android:hasCode="true"
+        tools:ignore="MissingApplicationIcon,MissingApplicationTitle" />
+</manifest>

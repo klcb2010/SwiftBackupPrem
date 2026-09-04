@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Swift Backup NoLogin</string>
+    <string name="module_description">绕过 Swift Backup 强制 Google 登录：自动匿名登录 + 解除 isAnonymous 云功能门禁（适配 5.0.8 / v603）</string>
+</resources>
