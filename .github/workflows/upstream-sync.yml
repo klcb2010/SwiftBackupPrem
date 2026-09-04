@@ -1,4 +1,5 @@
-name: Sync Upstream + Build
+
+name: Sync Upstream + Build + Release
 
 on:
   workflow_dispatch:
@@ -78,11 +79,24 @@ jobs:
           git remote add upstream \
             https://github.com/s1ddhants1/SwiftBackupPrem.git
 
+          # 同步主分支
           git fetch upstream main --depth=1
 
+          # 获取上游 v* Tag
+          git fetch upstream \
+            '+refs/tags/v*:refs/tags/upstream-v*' \
+            --force
+
           echo
-          echo "[upstream]"
+          echo "[upstream main]"
           git rev-parse upstream/main
+
+          echo
+          echo "[upstream v* tags]"
+          git tag \
+            --list 'upstream-v*' \
+            --sort=-v:refname \
+            | head -n 20 || true
 
       # =========================================================
       # 5. Check upstream change
@@ -164,9 +178,7 @@ jobs:
             /tmp/local-protected \
             /tmp/local-protected/.github/workflows
 
-          # -----------------------------------------------------
           # mod
-          # -----------------------------------------------------
           test -d mod
 
           cp -a \
@@ -175,9 +187,7 @@ jobs:
 
           echo "[protect] mod/"
 
-          # -----------------------------------------------------
           # ci.yml
-          # -----------------------------------------------------
           if [ -f .github/workflows/ci.yml ]; then
             cp \
               .github/workflows/ci.yml \
@@ -186,9 +196,7 @@ jobs:
             echo "[protect] .github/workflows/ci.yml"
           fi
 
-          # -----------------------------------------------------
           # upstream-sync.yml
-          # -----------------------------------------------------
           test -f .github/workflows/upstream-sync.yml
 
           cp \
@@ -212,9 +220,7 @@ jobs:
 
           echo "[sync] restoring local protected files..."
 
-          # -----------------------------------------------------
           # mod
-          # -----------------------------------------------------
           rm -rf mod
 
           cp -a \
@@ -223,9 +229,7 @@ jobs:
 
           echo "[restore] mod/"
 
-          # -----------------------------------------------------
           # ci.yml
-          # -----------------------------------------------------
           if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
             mkdir -p .github/workflows
 
@@ -236,9 +240,7 @@ jobs:
             echo "[restore] .github/workflows/ci.yml"
           fi
 
-          # -----------------------------------------------------
-          # workflow
-          # -----------------------------------------------------
+          # upstream-sync.yml
           cp \
             /tmp/local-protected/.github/workflows/upstream-sync.yml \
             .github/workflows/upstream-sync.yml
@@ -295,24 +297,6 @@ jobs:
 
       # =========================================================
       # 11. Verify generated ModHook
-      #
-      # 注意：
-      # 当前项目其他 Hook 可以合法使用 XposedModule。
-      #
-      # ModHook 也可能把 XposedModule 当作普通参数类型使用。
-      # 因此绝不能简单 grep：
-      #
-      #   import ... XposedModule
-      #
-      # 就判定失败。
-      #
-      # 真正检查：
-      #   1. ModHook.kt 是否存在
-      #   2. 是否为空
-      #   3. applyLocalHooks 是否为空
-      #   4. ModHook 自己是否重新继承 XposedModule
-      #   5. 是否使用旧 PackageLoadedParam
-      #   6. Module.kt 是否引用 ModHook
       # =========================================================
       - name: Verify generated ModHook
         if: steps.decision.outputs.run == 'true'
@@ -324,9 +308,6 @@ jobs:
           echo "Verify generated ModHook"
           echo "================================================="
 
-          # -----------------------------------------------------
-          # 1. Search generated ModHook.kt
-          # -----------------------------------------------------
           echo
           echo "[1/6] Searching generated ModHook.kt..."
 
@@ -374,9 +355,6 @@ jobs:
           echo "[OK] generated ModHook:"
           echo "$MODHOOK_FILE"
 
-          # -----------------------------------------------------
-          # 2. File is not empty
-          # -----------------------------------------------------
           echo
           echo "[2/6] Checking ModHook content..."
 
@@ -384,9 +362,6 @@ jobs:
 
           echo "[OK] ModHook.kt is not empty"
 
-          # -----------------------------------------------------
-          # 3. applyLocalHooks is not an empty implementation
-          # -----------------------------------------------------
           echo
           echo "[3/6] Checking applyLocalHooks implementation..."
 
@@ -400,23 +375,6 @@ jobs:
 
           echo "[OK] applyLocalHooks() is not an empty implementation"
 
-          # -----------------------------------------------------
-          # 4. Check ModHook entry structure
-          #
-          # 允许：
-          #
-          # import io.github.libxposed.api.XposedModule
-          #
-          # 或：
-          #
-          # fun xxx(module: XposedModule)
-          #
-          # 因为这些可能只是普通类型引用。
-          #
-          # 禁止：
-          #
-          # class ModHook : XposedModule()
-          # -----------------------------------------------------
           echo
           echo "[4/6] Checking ModHook entry..."
 
@@ -438,9 +396,6 @@ jobs:
 
           echo "[OK] ModHook does not redeclare XposedModule as entry"
 
-          # -----------------------------------------------------
-          # 5. Legacy PackageLoadedParam
-          # -----------------------------------------------------
           echo
           echo "[5/6] Checking legacy PackageLoadedParam..."
 
@@ -454,9 +409,6 @@ jobs:
 
           echo "[OK] no legacy PackageLoadedParam in ModHook"
 
-          # -----------------------------------------------------
-          # 6. Module.kt integration
-          # -----------------------------------------------------
           echo
           echo "[6/6] Checking Module.kt integration..."
 
@@ -526,8 +478,6 @@ jobs:
 
       # =========================================================
       # 15. Build release
-      #
-      # 这是 API 是否真正兼容的核心验证。
       # =========================================================
       - name: Build release
         if: steps.decision.outputs.run == 'true'
@@ -563,9 +513,6 @@ jobs:
 
           APK_DIR="app/build/outputs/apk/release"
 
-          # -----------------------------------------------------
-          # 1. APK directory
-          # -----------------------------------------------------
           echo
           echo "[1/4] Checking release APK..."
 
@@ -600,13 +547,9 @@ jobs:
           echo "[OK] APK found:"
           echo "$APK"
 
-          echo
           echo "[APK size]"
           stat -c '%n %s bytes' "$APK"
 
-          # -----------------------------------------------------
-          # 2. DEX files
-          # -----------------------------------------------------
           echo
           echo "[2/4] Checking APK dex files..."
 
@@ -625,9 +568,6 @@ jobs:
 
           echo "$DEX_LIST"
 
-          # -----------------------------------------------------
-          # 3. Search ModHook
-          # -----------------------------------------------------
           echo
           echo "[3/4] Searching ModHook in compiled dex..."
 
@@ -656,9 +596,6 @@ jobs:
             exit 1
           fi
 
-          # -----------------------------------------------------
-          # 4. Done
-          # -----------------------------------------------------
           echo
           echo "[4/4] APK integration check completed"
 
@@ -694,44 +631,22 @@ jobs:
           echo "Final verification"
           echo "================================================="
 
-          # -----------------------------------------------------
-          # mod
-          # -----------------------------------------------------
           test -d mod
           test -f mod/ModHook.kt
           test -f mod/apply.sh
           test -f mod/Module.patch
 
-          # -----------------------------------------------------
-          # workflows
-          # -----------------------------------------------------
           test -f .github/workflows/ci.yml
           test -f .github/workflows/upstream-sync.yml
 
-          # -----------------------------------------------------
-          # workflow identity
-          # -----------------------------------------------------
           grep -Fq \
-            'name: Sync Upstream + Build' \
+            'name: Sync Upstream + Build + Release' \
             .github/workflows/upstream-sync.yml
 
-          # -----------------------------------------------------
-          # upstream sync command
-          # -----------------------------------------------------
           grep -Fq \
             'git read-tree -u --reset upstream/main' \
             .github/workflows/upstream-sync.yml
 
-          # -----------------------------------------------------
-          # workflow protection
-          # -----------------------------------------------------
-          grep -Fq \
-            'upstream-sync.yml' \
-            .github/workflows/upstream-sync.yml
-
-          # -----------------------------------------------------
-          # generated ModHook
-          # -----------------------------------------------------
           MODHOOK_FILES="$(
             find app/src \
               -type f \
@@ -745,9 +660,6 @@ jobs:
             exit 1
           fi
 
-          # -----------------------------------------------------
-          # release APK
-          # -----------------------------------------------------
           APK_COUNT="$(
             find app/build/outputs/apk/release \
               -maxdepth 1 \
@@ -788,26 +700,230 @@ jobs:
 
           if git diff --cached --quiet; then
             echo "[SKIP] nothing to commit"
+          else
+            echo
+            echo "================================================="
+            echo "Commit files"
+            echo "================================================="
+
+            git diff --cached --name-status
+
+            git commit \
+              -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+
+            git push origin HEAD:main
+
+            echo
+            echo "[OK] pushed to main"
+          fi
+
+      # =========================================================
+      # 20. Determine upstream release tag
+      #
+      # 只认：
+      #
+      #   upstream 的 v* tag
+      #   并且该 tag 正好指向 upstream/main
+      #
+      # 防止 main 比最新 release 更新时错误发布旧版本号。
+      # =========================================================
+      - name: Determine upstream release tag
+        if: steps.decision.outputs.run == 'true'
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
+
+          echo "================================================="
+          echo "Determine upstream release tag"
+          echo "================================================="
+
+          RELEASE_TAG=""
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+
+            TAG_SHA="$(
+              git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null \
+              || true
+            )"
+
+            echo "tag=$tag"
+            echo "tag_sha=$TAG_SHA"
+
+            if [ "$TAG_SHA" = "$UPSTREAM_SHA" ]; then
+              RELEASE_TAG="${tag#upstream-}"
+              break
+            fi
+
+          done < <(
+            git tag \
+              --list 'upstream-v*' \
+              --sort=-v:refname
+          )
+
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "[INFO] upstream/main is not exactly a v* release tag"
+            echo "[INFO] no GitHub Release will be created"
+
             exit 0
+          fi
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "================================================="
+          echo "[OK] upstream release tag detected"
+          echo "Tag: $RELEASE_TAG"
+          echo "SHA: $UPSTREAM_SHA"
+          echo "================================================="
+
+      # =========================================================
+      # 21. Check existing GitHub Release
+      # =========================================================
+      - name: Check existing GitHub Release
+        if: steps.decision.outputs.run == 'true' && steps.release.outputs.release == 'true'
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking GitHub Release: $TAG_NAME"
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "[SKIP] GitHub Release already exists:"
+            echo "$TAG_NAME"
+
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "[OK] GitHub Release does not exist"
+            echo "[RUN] release will be created"
+          fi
+
+      # =========================================================
+      # 22. Create GitHub Release
+      #
+      # 关键：
+      #
+      # 不推 Tag 再等待另一个 Workflow。
+      #
+      # 直接在本次已经验证成功的 HEAD 上创建 Release。
+      #
+      # 因此：
+      #
+      # ModHook 验证
+      #      ↓
+      # Release APK
+      #      ↓
+      # GitHub Release
+      #
+      # 三者一定属于同一次构建。
+      # =========================================================
+      - name: Create GitHub Release
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_DIR="app/build/outputs/apk/release"
+
+          APK="$(
+            find "$APK_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | sort \
+              | head -n 1
+          )"
+
+          if [ -z "$APK" ]; then
+            echo "[FAIL] release APK not found"
+            exit 1
+          fi
+
+          echo "================================================="
+          echo "Create GitHub Release"
+          echo "================================================="
+
+          echo "Tag : $TAG_NAME"
+          echo "APK : $APK"
+
+          PRERELEASE=false
+
+          case "$TAG_NAME" in
+            *preview*|*alpha*|*beta*|*rc*)
+              PRERELEASE=true
+              ;;
+          esac
+
+          echo "Prerelease: $PRERELEASE"
+
+          gh release create "$TAG_NAME" \
+            --target HEAD \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            $( [ "$PRERELEASE" = "true" ] && echo "--prerelease" ) \
+            "$APK"
+
+          # 如果 mapping 存在则追加上传
+          MAPPING="app/build/outputs/mapping/release/mapping.txt"
+
+          if [ -f "$MAPPING" ]; then
+            gh release upload \
+              "$TAG_NAME" \
+              "$MAPPING" \
+              --clobber
           fi
 
           echo
           echo "================================================="
-          echo "Commit files"
+          echo "[OK] GitHub Release created"
+          echo "Tag: $TAG_NAME"
           echo "================================================="
 
-          git diff --cached --name-status
+      # =========================================================
+      # 23. Release skipped
+      # =========================================================
+      - name: Release skipped
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          git commit \
-            -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+          echo "================================================="
+          echo "Release already exists"
+          echo "================================================="
 
-          git push origin HEAD:main
-
-          echo
-          echo "[OK] pushed to main"
+          echo "Tag: ${{ steps.release.outputs.tag }}"
+          echo "Publishing skipped."
 
       # =========================================================
-      # 20. Upload APK
+      # 24. Upload APK artifact
+      #
+      # 即使没有 Release，也保留 Actions Artifact。
       # =========================================================
       - name: Upload APK
         if: steps.decision.outputs.run == 'true'
@@ -818,3 +934,4 @@ jobs:
             app/build/outputs/apk/release/*.apk
             app/build/outputs/mapping/release/*
           if-no-files-found: warn
+
