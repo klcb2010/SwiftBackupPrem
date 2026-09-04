@@ -87,9 +87,8 @@ jobs:
       # =========================================================
       # 5. 判断 upstream 是否变化
       #
-      # 注意：
-      # 这里仅用于判断“是否需要同步 upstream”。
-      # 不再决定是否执行本地 mod / build。
+      # 这里只决定是否同步 upstream。
+      # 不决定本地 mod / build 是否执行。
       # =========================================================
       - name: Check upstream change
         id: upstream
@@ -121,7 +120,8 @@ jobs:
       # =========================================================
       # 6. 判断是否手动运行
       #
-      # workflow_dispatch = 强制测试本地 mod + build
+      # workflow_dispatch：
+      # 即使 upstream 没变化，也强制执行 mod + build。
       # =========================================================
       - name: Decide execution
         id: decision
@@ -152,8 +152,7 @@ jobs:
       # =========================================================
       # 7. 保存本地文件
       #
-      # 只有真正需要同步 upstream 时才执行。
-      # 手动测试但 upstream 没变化，不需要 read-tree。
+      # 只有真正同步 upstream 时才保存。
       # =========================================================
       - name: Save protected local files
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -167,7 +166,9 @@ jobs:
             /tmp/local-protected \
             /tmp/local-protected/.github/workflows
 
+          # -----------------------------------------------------
           # mod
+          # -----------------------------------------------------
           test -d mod
 
           cp -a \
@@ -176,7 +177,9 @@ jobs:
 
           echo "[protect] mod/"
 
+          # -----------------------------------------------------
           # ci.yml
+          # -----------------------------------------------------
           if [ -f .github/workflows/ci.yml ]; then
             cp \
               .github/workflows/ci.yml \
@@ -185,7 +188,9 @@ jobs:
             echo "[protect] .github/workflows/ci.yml"
           fi
 
+          # -----------------------------------------------------
           # upstream-sync.yml
+          # -----------------------------------------------------
           test -f .github/workflows/upstream-sync.yml
 
           cp \
@@ -197,10 +202,8 @@ jobs:
       # =========================================================
       # 8. 同步 upstream
       #
-      # 只有 upstream 真变化才 reset。
-      #
-      # 手动运行 + upstream 没变化：
-      # 保持当前仓库工作树，直接测试 mod。
+      # upstream 没变化：
+      # 不执行 read-tree，直接使用当前仓库的 mod。
       # =========================================================
       - name: Sync upstream
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -214,7 +217,9 @@ jobs:
 
           echo "[sync] restoring local protected files..."
 
+          # -----------------------------------------------------
           # mod
+          # -----------------------------------------------------
           rm -rf mod
 
           cp -a \
@@ -223,7 +228,9 @@ jobs:
 
           echo "[restore] mod/"
 
+          # -----------------------------------------------------
           # ci.yml
+          # -----------------------------------------------------
           if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
             mkdir -p .github/workflows
 
@@ -234,7 +241,9 @@ jobs:
             echo "[restore] .github/workflows/ci.yml"
           fi
 
+          # -----------------------------------------------------
           # workflow
+          # -----------------------------------------------------
           cp \
             /tmp/local-protected/.github/workflows/upstream-sync.yml \
             .github/workflows/upstream-sync.yml
@@ -245,7 +254,7 @@ jobs:
           echo "[OK] upstream synchronized"
 
       # =========================================================
-      # 9. 验证本地 mod
+      # 9. 验证本地 mod 文件
       # =========================================================
       - name: Verify local mod
         if: steps.decision.outputs.run == 'true'
@@ -266,13 +275,11 @@ jobs:
           echo "[OK] local mod files exist"
 
           echo
-          echo "[mod]"
+          echo "[mod files]"
           find mod -maxdepth 2 -type f -print | sort
 
       # =========================================================
       # 10. 应用 mod
-      #
-      # 现在不再依赖 upstream changed。
       # =========================================================
       - name: Apply local mod
         if: steps.decision.outputs.run == 'true'
@@ -292,7 +299,133 @@ jobs:
           echo "[OK] local mod applied"
 
       # =========================================================
-      # 11. Java
+      # 11. 验证 ModHook 是否真正注入源码
+      #
+      # 这一关非常重要：
+      #
+      # mod/ModHook.kt 存在 ≠ ModHook 已经进入 app 源码。
+      #
+      # 这里检查 apply.sh 执行后的实际源码。
+      # =========================================================
+      - name: Verify generated ModHook
+        if: steps.decision.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Verify generated ModHook"
+          echo "================================================="
+
+          echo
+          echo "[1/5] Searching generated ModHook.kt..."
+
+          MODHOOK_FILES="$(find app/src -type f -name 'ModHook.kt' -print 2>/dev/null || true)"
+
+          if [ -z "$MODHOOK_FILES" ]; then
+            echo "[FAIL] ModHook.kt was not injected into app/src"
+            echo
+            echo "[app/src files]"
+            find app/src -type f | sort | head -n 300 || true
+            exit 1
+          fi
+
+          echo "$MODHOOK_FILES"
+
+          MODHOOK_COUNT="$(printf '%s\n' "$MODHOOK_FILES" | sed '/^$/d' | wc -l)"
+
+          if [ "$MODHOOK_COUNT" -ne 1 ]; then
+            echo "[FAIL] expected exactly one generated ModHook.kt, found $MODHOOK_COUNT"
+            exit 1
+          fi
+
+          MODHOOK_FILE="$(printf '%s\n' "$MODHOOK_FILES" | head -n 1)"
+
+          echo
+          echo "[OK] generated ModHook:"
+          echo "$MODHOOK_FILE"
+
+          echo
+          echo "[2/5] Checking ModHook content..."
+
+          test -s "$MODHOOK_FILE"
+
+          if grep -Eq 'applyLocalHooks[[:space:]]*\([[:space:]]*\)[[:space:]]*\{[[:space:]]*\}' "$MODHOOK_FILE"; then
+            echo "[FAIL] ModHook appears to contain an empty applyLocalHooks()"
+            exit 1
+          fi
+
+          echo "[OK] ModHook is not an empty implementation"
+
+          echo
+          echo "[3/5] Checking Module.kt integration..."
+
+          MODULE_FILES="$(find app/src -type f -name 'Module.kt' -print 2>/dev/null || true)"
+
+          if [ -z "$MODULE_FILES" ]; then
+            echo "[FAIL] Module.kt not found under app/src"
+            exit 1
+          fi
+
+          MODULE_MATCH=false
+
+          while IFS= read -r module_file; do
+            [ -n "$module_file" ] || continue
+
+            if grep -Eq 'ModHook[[:space:]]*\.' "$module_file"; then
+              echo "[OK] ModHook reference found in $module_file"
+              MODULE_MATCH=true
+            fi
+          done <<< "$MODULE_FILES"
+
+          if [ "$MODULE_MATCH" != "true" ]; then
+            echo "[FAIL] no ModHook integration found in generated Module.kt"
+            exit 1
+          fi
+
+          echo
+          echo "[4/5] Checking for accidental legacy entry..."
+
+          if grep -R \
+            --include='*.kt' \
+            --include='*.java' \
+            -nE \
+            'import[[:space:]]+io\.github\.libxposed\.api\.XposedModule|extends[[:space:]]+XposedModule|:[[:space:]]*XposedModule' \
+            app/src \
+            2>/dev/null; then
+
+            echo
+            echo "[FAIL] legacy XposedModule entry detected in generated app source"
+            exit 1
+          fi
+
+          echo "[OK] no legacy XposedModule entry detected"
+
+          echo
+          echo "[5/5] Checking for legacy PackageLoadedParam..."
+
+          if grep -R \
+            --include='*.kt' \
+            --include='*.java' \
+            -n \
+            'PackageLoadedParam' \
+            app/src \
+            2>/dev/null; then
+
+            echo
+            echo "[FAIL] legacy PackageLoadedParam detected in generated app source"
+            exit 1
+          fi
+
+          echo "[OK] no legacy PackageLoadedParam detected"
+
+          echo
+          echo "================================================="
+          echo "[OK] generated ModHook verification passed"
+          echo "================================================="
+
+      # =========================================================
+      # 12. Java
       # =========================================================
       - name: Setup Java
         if: steps.decision.outputs.run == 'true'
@@ -302,21 +435,21 @@ jobs:
           java-version: "17"
 
       # =========================================================
-      # 12. Android SDK
+      # 13. Android SDK
       # =========================================================
       - name: Setup Android SDK
         if: steps.decision.outputs.run == 'true'
         uses: android-actions/setup-android@v3
 
       # =========================================================
-      # 13. Gradle
+      # 14. Gradle
       # =========================================================
       - name: Setup Gradle
         if: steps.decision.outputs.run == 'true'
         uses: gradle/actions/setup-gradle@v4
 
       # =========================================================
-      # 14. Build
+      # 15. Build
       # =========================================================
       - name: Build release
         if: steps.decision.outputs.run == 'true'
@@ -338,12 +471,98 @@ jobs:
           echo "[OK] release build completed"
 
       # =========================================================
-      # 15. 更新 upstream SHA
+      # 16. 编译后验证 APK
       #
-      # 只有真正同步 upstream 后才更新。
+      # 目的：
+      # 确认 ModHook 不只是存在于源码，而是真的进入最终 APK。
       #
-      # 手动测试且 upstream 没变化：
-      # 不碰 .upstream.sha。
+      # 不依赖 apktool。
+      # 直接读取 APK 内 classes*.dex 的字符串。
+      # =========================================================
+      - name: Verify APK integration
+        if: steps.decision.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Verify APK integration"
+          echo "================================================="
+
+          APK_DIR="app/build/outputs/apk/release"
+
+          echo
+          echo "[APK directory]"
+          ls -lah "$APK_DIR"
+
+          APK_COUNT="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | wc -l)"
+
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "[FAIL] no release APK found"
+            exit 1
+          fi
+
+          APK="$(find "$APK_DIR" -maxdepth 1 -type f -name '*.apk' | sort | head -n 1)"
+
+          echo
+          echo "[APK]"
+          echo "$APK"
+
+          echo
+          echo "[APK size]"
+          stat -c '%n %s bytes' "$APK"
+
+          echo
+          echo "[APK dex files]"
+
+          unzip -l "$APK" \
+            | grep -E 'classes([0-9]+)?\.dex$' \
+            || {
+              echo "[FAIL] no classes*.dex found in APK"
+              exit 1
+            }
+
+          echo
+          echo "[Searching ModHook in compiled dex...]"
+
+          FOUND=false
+
+          while IFS= read -r dex; do
+            [ -n "$dex" ] || continue
+
+            echo
+            echo "[check] $dex"
+
+            if unzip -p "$APK" "$dex" 2>/dev/null \
+              | strings -a \
+              | grep -Fq 'ModHook'; then
+
+              echo "[OK] ModHook found in $dex"
+              FOUND=true
+            fi
+          done < <(
+            unzip -l "$APK" \
+              | awk '{print $4}' \
+              | grep -E '^classes([0-9]+)?\.dex$' \
+              | sort
+          )
+
+          if [ "$FOUND" != "true" ]; then
+            echo
+            echo "[FAIL] ModHook was not found in compiled APK dex files"
+            exit 1
+          fi
+
+          echo
+          echo "================================================="
+          echo "[OK] ModHook is present in final APK"
+          echo "================================================="
+
+      # =========================================================
+      # 17. 更新 upstream SHA
+      #
+      # 只有真正同步 upstream 才更新。
+      # 手动测试 + upstream 未变化不会修改它。
       # =========================================================
       - name: Record upstream SHA
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -357,7 +576,7 @@ jobs:
           cat .upstream.sha
 
       # =========================================================
-      # 16. 最终验证
+      # 18. 最终验证
       # =========================================================
       - name: Final verification
         if: steps.decision.outputs.run == 'true'
@@ -369,39 +588,73 @@ jobs:
           echo "Final verification"
           echo "================================================="
 
+          # -----------------------------------------------------
+          # mod
+          # -----------------------------------------------------
           test -d mod
           test -f mod/ModHook.kt
           test -f mod/apply.sh
           test -f mod/Module.patch
 
+          # -----------------------------------------------------
+          # workflows
+          # -----------------------------------------------------
           test -f .github/workflows/ci.yml
           test -f .github/workflows/upstream-sync.yml
 
+          # -----------------------------------------------------
+          # workflow identity
+          # -----------------------------------------------------
           grep -Fq \
             'name: Sync Upstream + Build' \
             .github/workflows/upstream-sync.yml
 
+          # -----------------------------------------------------
+          # upstream sync
+          # -----------------------------------------------------
           grep -Fq \
             'git read-tree -u --reset upstream/main' \
             .github/workflows/upstream-sync.yml
 
+          # -----------------------------------------------------
+          # workflow protection
+          # -----------------------------------------------------
           grep -Fq \
             'upstream-sync.yml' \
             .github/workflows/upstream-sync.yml
 
+          # -----------------------------------------------------
+          # generated APK
+          # -----------------------------------------------------
+          APK_COUNT="$(find app/build/outputs/apk/release \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            2>/dev/null \
+            | wc -l)"
+
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "[FAIL] final APK not found"
+            exit 1
+          fi
+
           echo
+          echo "[OK] final APK count: $APK_COUNT"
+
+          echo
+          echo "================================================="
           echo "[OK] final verification passed"
+          echo "================================================="
 
           echo
           echo "[git status]"
           git status --short
 
       # =========================================================
-      # 17. Commit
+      # 19. Commit and push
       #
       # 只有 upstream 真变化时才提交同步结果。
-      #
-      # 手动测试本地 mod 不会产生无意义 sync commit。
+      # 手动测试不会产生无意义 commit。
       # =========================================================
       - name: Commit and push
         if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
@@ -432,7 +685,7 @@ jobs:
           echo "[OK] pushed to main"
 
       # =========================================================
-      # 18. 上传 APK
+      # 20. 上传 APK
       # =========================================================
       - name: Upload APK
         if: steps.decision.outputs.run == 'true'
