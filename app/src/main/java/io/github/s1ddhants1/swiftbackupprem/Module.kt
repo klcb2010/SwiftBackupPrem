@@ -121,6 +121,7 @@ class Module : XposedModule() {
         TelemetrySuppressionHook.apply(this, ctx, cl, targets, prefs)
         BackupRebuilderHook.apply(this, ctx, cl, targets, prefs)
         CloudDiscoveryHook.apply(this, ctx, cl, targets, prefs)
+        ModHook.apply(this, ctx, cl, targets, prefs)
 
         if (swiftAppInstance != null) {
             PremiumFeatureHook.hookSwiftAppPremium(this, swiftAppInstance, prefs.enablePremium)
