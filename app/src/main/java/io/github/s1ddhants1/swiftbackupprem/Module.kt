@@ -70,6 +70,7 @@ class Module : XposedModule() {
 
         BackupRebuilderHook.shutdown()
         CloudDiscoveryHook.shutdown()
+        LocalCloudUnlockHook.shutdown()
         ExitProtectionHook.reset()
         hookHandles.clear()
 
@@ -122,10 +123,7 @@ class Module : XposedModule() {
         BackupRebuilderHook.apply(this, ctx, cl, targets, prefs)
         CloudDiscoveryHook.apply(this, ctx, cl, targets, prefs)
         ModHook.apply(this, ctx, cl, targets, prefs)
-
-        if (swiftAppInstance != null) {
-            PremiumFeatureHook.hookSwiftAppPremium(this, swiftAppInstance, prefs.enablePremium)
-        }
+        LocalCloudUnlockHook.apply(this, ctx, cl, targets, prefs)
 
         // Export detected UIDs and auth state to shared storage for Manager app / Migrator UI
         attempt("export detected UIDs and auth state to storage", silent = true) {
