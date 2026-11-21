@@ -491,7 +491,7 @@ jobs:
           echo "================================================="
 
           ./gradlew \
-            :app:assembleRelease \
+            :app:assembleAllRelease \
             --stacktrace
 
           echo
