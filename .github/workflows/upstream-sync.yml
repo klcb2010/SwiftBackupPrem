@@ -583,9 +583,50 @@ jobs:
             stat -c '%n %s bytes' "$APK"
 
             DEX_LIST="$(
-              unzip -l "$APK" \
-                | awk '{print $4}' \
-                | grep -E '^classes([0-9]+)?\.dex
+              unzip -Z1 "$APK" \
+                | grep -E '^classes([0-9]+)?\\.dex$' \
+                || true
+            )"
+
+            if [ -z "$DEX_LIST" ]; then
+              echo "[FAIL] no classes*.dex found in $APK"
+              exit 1
+            fi
+
+            echo "[OK] dex files:"
+            printf '%s\n' "$DEX_LIST"
+
+            echo
+            echo "[check] verifying ModHook is present in APK dex..."
+
+            DEX_STRINGS="$(
+              while IFS= read -r dex; do
+                [ -n "$dex" ] || continue
+                unzip -p "$APK" "$dex"
+              done <<< "$DEX_LIST" | strings
+            )"
+
+            if ! grep -Fq 'ModHook' <<< "$DEX_STRINGS"; then
+              echo "[FAIL] ModHook was not found in APK dex: $APK"
+              exit 1
+            fi
+
+            echo "[OK] ModHook found in APK dex: $APK"
+          done
+
+          echo
+          echo "[3/4] Checking normal and legacy APK distinction..."
+
+          if [ "$NORMAL_APK" = "$LEGACY_APK" ]; then
+            echo "[FAIL] normal and legacy APK paths are identical"
+            exit 1
+          fi
+
+          echo "[OK] normal and legacy APKs are separate"
+
+          echo
+          echo "[4/4] APK integration verification passed"
+          echo "================================================="
 
       # =========================================================
       # 17. Record upstream formal release
