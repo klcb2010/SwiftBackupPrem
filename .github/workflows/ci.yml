@@ -58,8 +58,28 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Verify preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -n "${ANDROID_HOME:-}" || {
+            echo "[FAIL] ANDROID_HOME is not configured on this runner"
+            exit 1
+          }
+
+          test -d "$ANDROID_HOME/platform-tools" || {
+            echo "[FAIL] Android platform-tools not found: $ANDROID_HOME/platform-tools"
+            exit 1
+          }
+
+          test -d "$ANDROID_HOME/platforms" || {
+            echo "[FAIL] Android SDK platforms directory not found: $ANDROID_HOME/platforms"
+            exit 1
+          }
+
+          echo "[OK] Using Android SDK preinstalled on GitHub runner"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
