@@ -144,7 +144,6 @@ class ConfigRepositoryTest {
         assertEquals("1:999:android:old", result.googleAppId)
         assertEquals("old-project", result.projectId)
 
-        // Verifies new keys smoothly adopt default values without error
         assertFalse(result.enableGoogleDriveScope)
         assertFalse(result.enableCloudDiscovery)
         assertFalse(result.enableSnapshotInjection)
@@ -173,6 +172,23 @@ class ConfigRepositoryTest {
         assertTrue(prefs.enableCloudDiscovery)
     }
 
+    @Test
+    fun parseConfigParsesLocalAccountCustomUid() {
+        val prefs = PreferencesManager(null)
+        val json = """
+            {
+              "unlockLocalCloudFeatures": true,
+              "localAccountCustomUid": "test-custom-uid-xyz"
+            }
+        """.trimIndent()
+
+        val result = repository.parseConfig(json, prefs)
+
+        assertTrue(result.unlockLocalCloudFeatures)
+        assertEquals("test-custom-uid-xyz", result.localAccountCustomUid)
+        assertEquals("test-custom-uid-xyz", prefs.localAccountCustomUid)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun parseConfigRejectsInvalidJsonStructure() {
         val prefs = PreferencesManager(null)
@@ -183,5 +199,21 @@ class ConfigRepositoryTest {
         """.trimIndent()
 
         repository.parseConfig(json, prefs)
+    }
+
+    @Test
+    fun parseConfigAcceptsJsonWithSingleQuotesAndSpecialCharacters() {
+        val prefs = PreferencesManager(null)
+        val json = """
+            {
+              "enablePremium": true,
+              "disableTelemetry": true,
+              "projectId": "project-with-'quotes'-and-symbols"
+            }
+        """.trimIndent()
+
+        val result = repository.parseConfig(json, prefs)
+        assertTrue(result.enablePremium)
+        assertEquals("project-with-'quotes'-and-symbols", result.projectId)
     }
 }

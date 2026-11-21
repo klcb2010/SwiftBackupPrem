@@ -12,4 +12,7 @@ object Consts {
     const val googleStorageBucket = "google_storage_bucket"
     const val projectId = "project_id"
     const val oauthClientId = "oauth_client_id"
+    const val localAccountCustomUid = "local_account_custom_uid"
+    const val keyForceStop = "pref_force_stop"
+    const val actionForceStop = "io.github.s1ddhants1.swiftbackupprem.ACTION_FORCE_STOP"
 }

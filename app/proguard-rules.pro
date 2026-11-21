@@ -1,5 +1,9 @@
-# Preserve line numbers and source file attributes for debugging stack traces
--keepattributes SourceFile,LineNumberTable,*Annotation*,Signature,InnerClasses,EnclosingMethod,Exceptions
+# Preserve line numbers and essential reflection annotations
+-keepattributes LineNumberTable,*Annotation*,Signature
+-renamesourcefileattribute SourceFile
+
+# Repackage obfuscated classes to root to shrink DEX string pool
+-repackageclasses ""
 
 # LibXposed Modern API rules
 -dontwarn io.github.libxposed.**
@@ -10,12 +14,34 @@
     public void on*(...);
 }
 
+# Legacy Xposed API rules
+-dontwarn de.robv.android.xposed.**
+-keep class * implements de.robv.android.xposed.IXposedHookLoadPackage { *; }
+-keep class * implements de.robv.android.xposed.IXposedHookZygoteInit { *; }
+-keep class * implements de.robv.android.xposed.IXposedHookInitPackageResources { *; }
+-adaptresourcefilecontents assets/xposed_init
+-keepclassmembers class io.github.s1ddhants1.swiftbackupprem.App { public static boolean isModuleActive(); }
+-keep class io.github.s1ddhants1.swiftbackupprem.FrameworkHelper { *; }
+-keepclassmembers class io.github.s1ddhants1.swiftbackupprem.FrameworkHelper { *; }
+
 # Keep XposedProvider for LSPosed Framework Service IPC
 -keep class io.github.libxposed.service.XposedProvider { *; }
 
-# Keep DexKit bridge classes used by native C++ (libdexkit.so) JNI reflection
--keep class org.luckypray.dexkit.** { *; }
--keepclassmembers class org.luckypray.dexkit.** { *; }
+# AndroidX Preference (compileOnly provided by target app)
+-dontwarn androidx.preference.**
+-keep class io.github.s1ddhants1.swiftbackupprem.hook.InAppSettingsHook* { *; }
+-keepclassmembers class io.github.s1ddhants1.swiftbackupprem.hook.InAppSettingsHook* { *; }
+-keep class io.github.s1ddhants1.swiftbackupprem.util.LSPatchHelper* { *; }
+-keepclassmembers class io.github.s1ddhants1.swiftbackupprem.util.LSPatchHelper* { *; }
+
+# Keep DexKit bridge and schema/result classes used by native C++ (libdexkit.so) JNI reflection
+-keep class org.luckypray.dexkit.DexKitBridge { *; }
+-keep class org.luckypray.dexkit.schema.** { *; }
+-keep class org.luckypray.dexkit.result.** { *; }
+-keep class org.luckypray.dexkit.util.NativeReflect { *; }
+-keepclasseswithmembers,includedescriptorclasses class org.luckypray.dexkit.** {
+    native <methods>;
+}
 
 # Keep all native JNI method declarations
 -keepclasseswithmembernames class * {

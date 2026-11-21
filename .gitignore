@@ -10,7 +10,16 @@ build
 local.properties
 release
 release.keystore
+keystore.properties
+*.keystore
+keystore.properties
+*.jks
+*.p12
+*.mobileprovision
 .kotlin
+*.apk
+__pycache__/
+*.py[cod]
 
 # Documentation
 /docs/

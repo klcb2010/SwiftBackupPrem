@@ -4,12 +4,9 @@ import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import androidx.annotation.Keep
-import io.github.libxposed.api.XposedInterface
-import io.github.libxposed.api.XposedModule
 import io.github.s1ddhants1.swiftbackupprem.Consts
 import io.github.s1ddhants1.swiftbackupprem.util.PreferencesManager
 import io.github.s1ddhants1.swiftbackupprem.util.attempt
-import io.github.libxposed.api.XposedInterface.Chain
 
 /**
  * Local API-102 hook entry (功能版 + 上传链探针)。
@@ -53,7 +50,7 @@ object ModHook : HookHandler {
     private const val P_CF3 = "Lcf3"    // FireSynchronizer
 
     override fun apply(
-        module: XposedModule,
+        module: HookContext,
         context: Context,
         classLoader: ClassLoader,
         targets: ResolvedTargets,
@@ -78,7 +75,7 @@ object ModHook : HookHandler {
     // ------------------------------------------------------------------
 
     private fun applyLocalHooks(
-        module: XposedModule,
+        module: HookContext,
         context: Context,
         classLoader: ClassLoader,
         targets: ResolvedTargets
@@ -105,7 +102,7 @@ object ModHook : HookHandler {
                 module.hookTracked(
                     onCreate,
                     idPrefix = "sbnologin-auto-signin",
-                    priority = XposedInterface.PRIORITY_HIGHEST,
+                    priority = PRIORITY_HIGHEST,
                     deoptimize = true
                 ).intercept { chain ->
                     ensureSignedIn(classLoader, sessionClass, anonFactory, userClass)
@@ -121,7 +118,7 @@ object ModHook : HookHandler {
         Log.i(TAG, "local hook initialization complete")
     }
 
-    private fun hookIsAnonymousFalse(module: XposedModule, userClass: Class<*>) {
+    private fun hookIsAnonymousFalse(module: HookContext, userClass: Class<*>) {
         val target = attempt("find isAnonymous getter", silent = true) {
             userClass.getDeclaredMethod("isAnonymous")
         } ?: attempt("collect no-arg boolean getters on MFirebaseUser", silent = true) {
@@ -284,7 +281,7 @@ object ModHook : HookHandler {
     // 探针（v620 专用，定位后删除本段）
     // ------------------------------------------------------------------
 
-    private fun installProbes(module: XposedModule, classLoader: ClassLoader) {
+    private fun installProbes(module: HookContext, classLoader: ClassLoader) {
         Log.i(PROBE, "=== installing upload-chain probes ===")
         probeStateMachine(module, classLoader)   // P1 Lag8.c()
         probeExecuteUpload(module, classLoader)  // P2/P3 g62.f / g62.i
@@ -293,7 +290,7 @@ object ModHook : HookHandler {
         probeFireSynchronizer(module, classLoader) // P6/P7 cf3.a / cf3.b
     }
 
-    private fun probeStateMachine(module: XposedModule, cl: ClassLoader) {
+    private fun probeStateMachine(module: HookContext, cl: ClassLoader) {
         attempt("probe Lag8.c", silent = true) {
             val k = cl.loadClass(P_LAG8)
             val m = k.declaredMethods.first { it.name == "c" && it.parameterCount == 0 }
@@ -314,7 +311,7 @@ object ModHook : HookHandler {
         }
     }
 
-    private fun probeExecuteUpload(module: XposedModule, cl: ClassLoader) {
+    private fun probeExecuteUpload(module: HookContext, cl: ClassLoader) {
         attempt("probe g62.f", silent = true) {
             val k = cl.loadClass(P_G62)
             val m = k.declaredMethods.first { it.name == "f" && it.parameterCount == 0 }
@@ -335,7 +332,7 @@ object ModHook : HookHandler {
         }
     }
 
-    private fun probePutLayer(module: XposedModule, cl: ClassLoader) {
+    private fun probePutLayer(module: HookContext, cl: ClassLoader) {
         attempt("probe mj1.e", silent = true) {
             val k = cl.loadClass(P_MJ1)
             val m = k.declaredMethods.firstOrNull {
@@ -352,7 +349,7 @@ object ModHook : HookHandler {
         }
     }
 
-    private fun probeWebDavChunk(module: XposedModule, cl: ClassLoader) {
+    private fun probeWebDavChunk(module: HookContext, cl: ClassLoader) {
         attempt("probe vq8.x", silent = true) {
             val k = cl.loadClass(P_VQ8)
             val m = k.declaredMethods.firstOrNull {
@@ -368,7 +365,7 @@ object ModHook : HookHandler {
         }
     }
 
-    private fun probeFireSynchronizer(module: XposedModule, cl: ClassLoader) {
+    private fun probeFireSynchronizer(module: HookContext, cl: ClassLoader) {
         attempt("probe cf3.a", silent = true) {
             val k = cl.loadClass(P_CF3)
             val m = k.declaredMethods.firstOrNull {

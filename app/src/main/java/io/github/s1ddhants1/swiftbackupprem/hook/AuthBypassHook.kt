@@ -3,7 +3,6 @@ package io.github.s1ddhants1.swiftbackupprem.hook
 import android.content.Context
 import android.util.Log
 import androidx.annotation.Keep
-import io.github.libxposed.api.XposedModule
 import io.github.s1ddhants1.swiftbackupprem.Consts
 import io.github.s1ddhants1.swiftbackupprem.util.PreferencesManager
 import io.github.s1ddhants1.swiftbackupprem.util.attempt
@@ -12,7 +11,7 @@ import io.github.s1ddhants1.swiftbackupprem.util.attempt
 object AuthBypassHook : HookHandler {
 
     override fun apply(
-        module: XposedModule,
+        module: HookContext,
         context: Context,
         classLoader: ClassLoader,
         targets: ResolvedTargets,
@@ -21,7 +20,7 @@ object AuthBypassHook : HookHandler {
         Log.d(Consts.TAG, "Applying core AuthBypassHook")
         targets.clientIdClass?.let { cIdClass ->
             val candidateMethods = cIdClass.declaredMethods.filter { m ->
-                m.parameterCount == 2 && (m.name == "e" || m.returnType == Void.TYPE || m.returnType == java.lang.Void.TYPE)
+                m.parameterCount == 2 && (m.returnType == Void.TYPE || m.returnType == java.lang.Void.TYPE)
             }
             for (m in candidateMethods) {
                 attempt("hook legacy FirebaseAuth bypass method ${m.name}") {
@@ -41,12 +40,9 @@ object AuthBypassHook : HookHandler {
                                     for (nested in cIdClass.declaredClasses) {
                                         for (inner in nested.declaredClasses) {
                                             val successInstance = attempt("get static success instance", silent = true) {
-                                                if (inner.simpleName == "b") {
-                                                    inner.getField("a").get(null)
-                                                } else {
-                                                    inner.declaredFields.firstOrNull { java.lang.reflect.Modifier.isStatic(it.modifiers) && it.type == inner }?.get(null)
-                                                        ?: inner.declaredFields.firstOrNull { it.name == "a" && java.lang.reflect.Modifier.isStatic(it.modifiers) }?.get(null)
-                                                }
+                                                (inner.declaredFields.firstOrNull { java.lang.reflect.Modifier.isStatic(it.modifiers) && inner.isAssignableFrom(it.type) }
+                                                    ?: inner.declaredFields.firstOrNull { java.lang.reflect.Modifier.isStatic(it.modifiers) })
+                                                    ?.apply { isAccessible = true }?.get(null)
                                             }
                                             if (successInstance != null) {
                                                 val invokeMethod = callback.javaClass.methods.firstOrNull { it.name == "invoke" && it.parameterCount == 1 }
