@@ -513,7 +513,7 @@ jobs:
           APK_DIR="app/build/outputs/apk/release"
 
           echo
-          echo "[1/4] Checking release APK..."
+          echo "[1/4] Checking both release APKs..."
 
           if [ ! -d "$APK_DIR" ]; then
             echo "[FAIL] release output directory not found:"
@@ -521,86 +521,575 @@ jobs:
             exit 1
           fi
 
-          APK_COUNT="$(
+          mapfile -t APK_FILES < <(
             find "$APK_DIR" \
               -maxdepth 1 \
               -type f \
               -name '*.apk' \
-              | wc -l
-          )"
+              | sort
+          )
 
-          if [ "$APK_COUNT" -lt 1 ]; then
-            echo "[FAIL] no release APK found"
+          if [ "${#APK_FILES[@]}" -ne 2 ]; then
+            echo "[FAIL] expected exactly 2 release APKs (normal + legacy)"
+            printf '[found] %s\n' "${APK_FILES[@]}"
             exit 1
           fi
 
-          APK="$(
-            find "$APK_DIR" \
-              -maxdepth 1 \
-              -type f \
-              -name '*.apk' \
-              | sort \
-              | head -n 1
-          )"
+          NORMAL_APK=""
+          LEGACY_APK=""
 
-          echo "[OK] APK found:"
-          echo "$APK"
+          for apk in "${APK_FILES[@]}"; do
+            case "$(basename "$apk")" in
+              *-legacy-release.apk) LEGACY_APK="$apk" ;;
+              *-release.apk) NORMAL_APK="$apk" ;;
+            esac
+          done
 
-          echo "[APK size]"
-          stat -c '%n %s bytes' "$APK"
+          if [ -z "$NORMAL_APK" ] || [ -z "$LEGACY_APK" ]; then
+            echo "[FAIL] normal or legacy release APK is missing"
+            printf '[found] %s\n' "${APK_FILES[@]}"
+            exit 1
+          fi
+
+          echo "[OK] normal APK: $NORMAL_APK"
+          echo "[OK] legacy APK: $LEGACY_APK"
 
           echo
           echo "[2/4] Checking APK dex files..."
 
-          DEX_LIST="$(
-            unzip -l "$APK" \
-              | awk '{print $4}' \
-              | grep -E '^classes([0-9]+)?\.dex$' \
-              | sort \
-              || true
+          for APK in "${APK_FILES[@]}"; do
+            echo
+            echo "================================================="
+            echo "[check] $APK"
+            echo "================================================="
+
+            stat -c '%n %s bytes' "$APK"
+
+            DEX_LIST="$(
+              unzip -l "$APK" \
+                | awk '{print $4}' \
+                | grep -E '^classes([0-9]+)?\.dex
+
+      # =========================================================
+      # 17. Record upstream formal release
+      # =========================================================
+      - name: Record upstream release
+        if: steps.decision.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "${{ steps.upstream.outputs.tag }}" > .upstream.release
+
+          echo "[upstream.release]"
+          cat .upstream.release
+
+      # =========================================================
+      # 18. Final verification
+      # =========================================================
+      - name: Final verification
+        if: steps.decision.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Final verification"
+          echo "================================================="
+
+          test -d mod
+          test -f mod/ModHook.kt
+          test -f mod/apply.sh
+          test -f mod/Module.patch
+
+          test -f .github/workflows/ci.yml
+          test -f .github/workflows/upstream-sync.yml
+          test ! -f .github/workflows/auto-update-targets.yml
+
+          grep -Fq \
+            'name: Sync Upstream + Build + Release' \
+            .github/workflows/upstream-sync.yml
+
+          grep -Fq \
+            'git read-tree -u --reset' \
+            .github/workflows/upstream-sync.yml
+
+          MODHOOK_FILES="$(
+            find app/src \
+              -type f \
+              -name 'ModHook.kt' \
+              -print \
+              2>/dev/null || true
           )"
 
-          if [ -z "$DEX_LIST" ]; then
-            echo "[FAIL] no classes*.dex found in APK"
+          if [ -z "$MODHOOK_FILES" ]; then
+            echo "[FAIL] generated ModHook.kt not found"
             exit 1
           fi
 
-          echo "$DEX_LIST"
+          APK_COUNT="$(
+            find app/build/outputs/apk/release \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              2>/dev/null \
+              | wc -l
+          )"
 
-          echo
-          echo "[3/4] Searching ModHook in compiled dex..."
-
-          FOUND=false
-
-          while IFS= read -r dex; do
-            [ -n "$dex" ] || continue
-
-            echo
-            echo "[check] $dex"
-
-            if unzip -p "$APK" "$dex" 2>/dev/null \
-              | strings -a \
-              | grep -Fq 'ModHook'; then
-
-              echo "[OK] ModHook found in $dex"
-
-              FOUND=true
-            fi
-
-          done <<< "$DEX_LIST"
-
-          if [ "$FOUND" != "true" ]; then
-            echo
-            echo "[FAIL] ModHook was not found in compiled APK dex files"
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "[FAIL] final APK not found"
             exit 1
           fi
 
           echo
-          echo "[4/4] APK integration check completed"
+          echo "[OK] generated ModHook found"
+          echo "[OK] final APK count: $APK_COUNT"
 
           echo
           echo "================================================="
-          echo "[OK] ModHook is present in final APK"
+          echo "[OK] final verification passed"
+          echo "================================================="
+
+          echo
+          echo "[git status]"
+          git status --short
+
+      # =========================================================
+      # 19. Commit and push
+      # =========================================================
+      - name: Commit and push
+        if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "[SKIP] nothing to commit"
+          else
+            echo
+            echo "================================================="
+            echo "Commit files"
+            echo "================================================="
+
+            git diff --cached --name-status
+
+            git commit \
+              -m "sync: upstream ${{ steps.upstream.outputs.sha }}"
+
+            git push origin HEAD:main
+
+            echo
+            echo "[OK] pushed to main"
+          fi
+
+      # =========================================================
+      # 20. Use the exact upstream formal release tag
+      # =========================================================
+      - name: Determine release tag
+        if: steps.decision.outputs.run == 'true'
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_TAG="${{ steps.upstream.outputs.tag }}"
+
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "[FAIL] invalid formal release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+
+          echo "[OK] publishing upstream formal release: $RELEASE_TAG"
+
+      # =========================================================
+      # 21. Check existing GitHub Release
+      #
+      # 关键：
+      #
+      # 只查询：
+      #
+      #   $GITHUB_REPOSITORY
+      #
+      # 即：
+      #
+      #   klcb2010/SwiftBackupPrem
+      #
+      # 不查询 upstream。
+      # =========================================================
+      - name: Check existing GitHub Release
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true'
+        id: check_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Check existing GitHub Release"
+          echo "================================================="
+
+          echo "Repository:"
+          echo "$REPOSITORY"
+
+          echo
+          echo "Release tag:"
+          echo "$TAG_NAME"
+
+          if gh release view "$TAG_NAME" \
+            --repo "$REPOSITORY" \
+            >/dev/null 2>&1; then
+
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "================================================="
+            echo "[SKIP] Release already exists in THIS repository"
+            echo "Repository: $REPOSITORY"
+            echo "Tag: $TAG_NAME"
+            echo "================================================="
+
+          else
+
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+
+            echo
+            echo "================================================="
+            echo "[OK] Release does not exist in THIS repository"
+            echo "Repository: $REPOSITORY"
+            echo "Tag: $TAG_NAME"
+            echo "[RUN] Release will be created"
+            echo "================================================="
+
+          fi
+
+      # =========================================================
+      # 22. Prepare local release tag
+      # Tag 对应本次同步、构建验证后的本地源码。
+      # =========================================================
+      - name: Prepare local release tag
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Prepare local release tag"
+          echo "================================================="
+
+          CURRENT_HEAD="$(git rev-parse HEAD)"
+
+          echo "Repository : $REPOSITORY"
+          echo "Tag        : $TAG_NAME"
+          echo "HEAD       : $CURRENT_HEAD"
+
+          # -----------------------------------------------------
+          # 检查本地 Tag
+          # -----------------------------------------------------
+          if git rev-parse "refs/tags/$TAG_NAME^{commit}" >/dev/null 2>&1; then
+
+            EXISTING_TAG_SHA="$(
+              git rev-parse "refs/tags/$TAG_NAME^{commit}"
+            )"
+
+            echo
+            echo "Existing tag SHA:"
+            echo "$EXISTING_TAG_SHA"
+
+            if [ "$EXISTING_TAG_SHA" = "$CURRENT_HEAD" ]; then
+
+              echo
+              echo "[OK] local tag already points to current HEAD"
+
+            else
+
+              echo
+              echo "[INFO] existing tag points to another commit"
+              echo "[INFO] no Release exists for this tag"
+              echo "[INFO] moving tag to current verified HEAD"
+
+              git tag -f "$TAG_NAME" "$CURRENT_HEAD"
+
+              echo
+              echo "[OK] local tag moved to current HEAD"
+
+            fi
+
+          else
+
+            echo
+            echo "[INFO] local tag does not exist"
+
+            git tag "$TAG_NAME" "$CURRENT_HEAD"
+
+            echo
+            echo "[OK] local tag created at current HEAD"
+
+          fi
+
+          # -----------------------------------------------------
+          # Push Tag
+          #
+          # Tag 不存在时：
+          #   正常创建
+          #
+          # Tag 已存在但指向旧 Commit：
+          #   force 更新
+          #
+          # 只有 Release 不存在时才会执行这里。
+          # -----------------------------------------------------
+          echo
+          echo "[push] pushing release tag..."
+
+          git push origin \
+            "refs/tags/$TAG_NAME" \
+            --force
+
+          echo
+          echo "================================================="
+          echo "[OK] release tag prepared"
+          echo "Tag : $TAG_NAME"
+          echo "SHA : $CURRENT_HEAD"
+          echo "================================================="
+
+      # =========================================================
+      # 23. Create GitHub Release
+      #
+      # 此时：
+      #
+      #   Tag -> 当前已经验证成功的 HEAD
+      #
+      # 然后创建 Release + APK。
+      # =========================================================
+      - name: Create GitHub Release
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK_DIR="app/build/outputs/apk/release"
+
+          mapfile -t APK_FILES < <(
+            find "$APK_DIR" \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | sort
+          )
+
+          if [ "${#APK_FILES[@]}" -ne 2 ]; then
+            echo "[FAIL] expected exactly 2 release APKs (normal + legacy)"
+            printf '[found] %s\n' "${APK_FILES[@]}"
+            exit 1
+          fi
+
+          NORMAL_APK=""
+          LEGACY_APK=""
+
+          for apk in "${APK_FILES[@]}"; do
+            case "$(basename "$apk")" in
+              *-legacy-release.apk) LEGACY_APK="$apk" ;;
+              *-release.apk) NORMAL_APK="$apk" ;;
+            esac
+          done
+
+          if [ -z "$NORMAL_APK" ] || [ -z "$LEGACY_APK" ]; then
+            echo "[FAIL] normal or legacy release APK is missing"
+            exit 1
+          fi
+
+          CURRENT_HEAD="$(git rev-parse HEAD)"
+
+          TAG_SHA="$(
+            git rev-parse "refs/tags/$TAG_NAME^{commit}"
+          )"
+
+          echo "================================================="
+          echo "Create GitHub Release"
+          echo "================================================="
+
+          echo "Repository : $REPOSITORY"
+          echo "Tag        : $TAG_NAME"
+          echo "HEAD       : $CURRENT_HEAD"
+          echo "Tag SHA    : $TAG_SHA"
+          echo "Normal APK : $NORMAL_APK"
+          echo "Legacy APK : $LEGACY_APK"
+
+          # -----------------------------------------------------
+          # 最后安全检查：
+          # Tag 必须指向本次已经验证成功的 HEAD。
+          # -----------------------------------------------------
+          if [ "$TAG_SHA" != "$CURRENT_HEAD" ]; then
+            echo
+            echo "[FAIL] release tag does not point to current HEAD"
+            exit 1
+          fi
+
+          PRERELEASE="${{ steps.release.outputs.prerelease }}"
+
+          echo
+          echo "Release type: formal"
+
+          echo
+          echo "[1/2] Creating GitHub Release..."
+
+          gh release create "$TAG_NAME" \
+            --repo "$REPOSITORY" \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            "${APK_FILES[@]}"
+
+          echo
+          echo "[OK] GitHub Release created"
+
+          # -----------------------------------------------------
+          # 上传 mapping
+          # -----------------------------------------------------
+          MAPPING="app/build/outputs/mapping/release/mapping.txt"
+
+          if [ -f "$MAPPING" ]; then
+
+            echo
+            echo "[2/2] Uploading mapping.txt..."
+
+            gh release upload \
+              "$TAG_NAME" \
+              "$MAPPING" \
+              --repo "$REPOSITORY" \
+              --clobber
+
+            echo "[OK] mapping.txt uploaded"
+
+          else
+
+            echo
+            echo "[INFO] mapping.txt not found"
+            echo "[INFO] skipping mapping upload"
+
+          fi
+
+          echo
+          echo "================================================="
+          echo "[OK] GitHub Release created successfully"
+          echo "================================================="
+
+          echo
+          echo "Repository:"
+          echo "$REPOSITORY"
+
+          echo
+          echo "Tag:"
+          echo "$TAG_NAME"
+
+          echo
+          echo "Commit:"
+          echo "$CURRENT_HEAD"
+
+          echo
+          echo "APK:"
+          echo "$APK"
+
+      # =========================================================
+      # 24. Release skipped
+      # =========================================================
+      - name: Release skipped
+        if: >
+          steps.decision.outputs.run == 'true' &&
+          steps.release.outputs.release == 'true' &&
+          steps.check_release.outputs.exists == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "================================================="
+          echo "Release already exists"
+          echo "================================================="
+
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Tag: ${{ steps.release.outputs.tag }}"
+
+          echo
+          echo "[INFO] Publishing skipped."
+          echo "[INFO] This formal Release already exists in this repository."
+
+      # =========================================================
+      # 25. Upload APK artifact
+      #
+      # 即使没有 Release，也保留 Actions Artifact。
+      # =========================================================
+      - name: Upload APK
+        if: steps.decision.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftBackupPrem-release
+          path: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/mapping/release/*
+          if-no-files-found: warn
+ \
+                | sort \
+                || true
+            )"
+
+            if [ -z "$DEX_LIST" ]; then
+              echo "[FAIL] no classes*.dex found in $APK"
+              exit 1
+            fi
+
+            echo "$DEX_LIST"
+
+            echo
+            echo "[3/4] Searching ModHook in $APK..."
+
+            FOUND=false
+
+            while IFS= read -r dex; do
+              [ -n "$dex" ] || continue
+
+              if unzip -p "$APK" "$dex" 2>/dev/null \
+                | strings -a \
+                | grep -Fq 'ModHook'; then
+                echo "[OK] ModHook found in $APK ($dex)"
+                FOUND=true
+              fi
+            done <<< "$DEX_LIST"
+
+            if [ "$FOUND" != "true" ]; then
+              echo "[FAIL] ModHook was not found in $APK"
+              exit 1
+            fi
+          done
+
+          echo
+          echo "[4/4] Both APK integration checks completed"
+
+          echo
+          echo "================================================="
+          echo "[OK] ModHook is present in normal and legacy APKs"
           echo "================================================="
 
       # =========================================================
