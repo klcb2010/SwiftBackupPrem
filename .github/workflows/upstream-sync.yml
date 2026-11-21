@@ -720,22 +720,17 @@ jobs:
           fi
 
       # =========================================================
-      # 20. Determine upstream release tag
+      # 20. Determine release tag
       #
-      # 只认：
+      # 上游 main 正好对应正式版 Tag：
+      #   沿用正式版号，例如 v3.2.0
       #
-      #   upstream/main
+      # 上游 main 位于两个正式版之间：
+      #   发布独立开发构建，例如 dev-20261121.258
       #
-      # 正好对应：
-      #
-      #   upstream-v*
-      #
-      # 的情况。
-      #
-      # 这里仅用于确定“应该发布哪个版本”。
-      # 不检查本仓库 Release。
+      # 开发构建使用独立 Tag，不占用或冒用正式版号。
       # =========================================================
-      - name: Determine upstream release tag
+      - name: Determine release tag
         if: steps.decision.outputs.run == 'true'
         id: release
         shell: bash
@@ -745,7 +740,7 @@ jobs:
           UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
 
           echo "================================================="
-          echo "Determine upstream release tag"
+          echo "Determine release tag"
           echo "================================================="
 
           echo "Upstream main SHA:"
@@ -777,26 +772,35 @@ jobs:
               --sort=-v:refname
           )
 
-          if [ -z "$RELEASE_TAG" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
+          if [ -n "$RELEASE_TAG" ]; then
+            PRERELEASE=false
 
-            echo
-            echo "================================================="
-            echo "[INFO] upstream/main is not exactly a v* release tag"
-            echo "[INFO] no GitHub Release will be created"
-            echo "================================================="
+            case "$RELEASE_TAG" in
+              *preview*|*alpha*|*beta*|*rc*)
+                PRERELEASE=true
+                ;;
+            esac
 
-            exit 0
+            echo "[OK] exact upstream release tag detected: $RELEASE_TAG"
+          else
+            BUILD_DATE="$(date -u +%Y%m%d)"
+            RELEASE_TAG="dev-${BUILD_DATE}.${GITHUB_RUN_NUMBER}"
+            PRERELEASE=true
+
+            echo "[INFO] upstream/main is between formal releases"
+            echo "[INFO] using independent development tag: $RELEASE_TAG"
           fi
 
           echo "release=true" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
           echo
           echo "================================================="
-          echo "[OK] upstream release tag detected"
-          echo "Tag: $RELEASE_TAG"
-          echo "SHA: $UPSTREAM_SHA"
+          echo "[OK] release will be published"
+          echo "Tag       : $RELEASE_TAG"
+          echo "Prerelease: $PRERELEASE"
+          echo "SHA       : $UPSTREAM_SHA"
           echo "================================================="
 
       # =========================================================
@@ -1043,13 +1047,7 @@ jobs:
             exit 1
           fi
 
-          PRERELEASE=false
-
-          case "$TAG_NAME" in
-            *preview*|*alpha*|*beta*|*rc*)
-              PRERELEASE=true
-              ;;
-          esac
+          PRERELEASE="${{ steps.release.outputs.prerelease }}"
 
           echo
           echo "Prerelease : $PRERELEASE"
