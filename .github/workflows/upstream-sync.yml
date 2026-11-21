@@ -95,6 +95,9 @@ jobs:
       # =========================================================
       - name: Check upstream release
         id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
@@ -123,21 +126,35 @@ jobs:
             LAST_RELEASE=""
           fi
 
+          # 同时检查本仓库对应的 GitHub Release 是否存在。
+          # 即使 .upstream.release 已记录该版本，只要 Release 被删除，
+          # 就必须重新构建并发布，不能直接跳过。
+          if gh release view "$RELEASE_TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            LOCAL_RELEASE_EXISTS=true
+          else
+            LOCAL_RELEASE_EXISTS=false
+          fi
+
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-          echo "last=$LAST_RELEASE"
+          echo "last=$LAST_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "local_release_exists=$LOCAL_RELEASE_EXISTS" >> "$GITHUB_OUTPUT"
 
           echo
           echo "Latest upstream formal release: $RELEASE_TAG"
           echo "Release commit: $RELEASE_SHA"
           echo "Previously synced release: ${LAST_RELEASE:-none}"
+          echo "Local GitHub Release exists: $LOCAL_RELEASE_EXISTS"
 
-          if [ "$LAST_RELEASE" = "$RELEASE_TAG" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "[SKIP] no new upstream formal release"
-          else
+          if [ "$LAST_RELEASE" != "$RELEASE_TAG" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "[RUN] new upstream formal release detected"
+          elif [ "$LOCAL_RELEASE_EXISTS" != "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "[RUN] local Release is missing; rebuild and republish $RELEASE_TAG"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "[SKIP] upstream version unchanged and local Release exists"
           fi
 
       # =========================================================
