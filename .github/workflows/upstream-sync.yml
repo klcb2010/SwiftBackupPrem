@@ -464,9 +464,29 @@ jobs:
       # =========================================================
       # 13. Setup Android SDK
       # =========================================================
-      - name: Setup Android SDK
+      - name: Verify preinstalled Android SDK
         if: steps.decision.outputs.run == 'true'
-        uses: android-actions/setup-android@v3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -n "${ANDROID_HOME:-}" || {
+            echo "[FAIL] ANDROID_HOME is not configured on this runner"
+            exit 1
+          }
+
+          test -d "$ANDROID_HOME/platform-tools" || {
+            echo "[FAIL] Android platform-tools not found: $ANDROID_HOME/platform-tools"
+            exit 1
+          }
+
+          test -d "$ANDROID_HOME/platforms" || {
+            echo "[FAIL] Android SDK platforms directory not found: $ANDROID_HOME/platforms"
+            exit 1
+          }
+
+          echo "[OK] Using Android SDK preinstalled on GitHub runner"
 
       # =========================================================
       # 14. Setup Gradle
