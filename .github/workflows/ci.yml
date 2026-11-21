@@ -8,6 +8,8 @@ on:
       - testing
     paths-ignore:
       - '**.md'
+      - 'README.md'
+      - '.github/workflows/**'
       - 'docs/**'
       - 'Screenshots/**'
       - '.idea/**'
@@ -24,6 +26,8 @@ on:
       - testing
     paths-ignore:
       - '**.md'
+      - 'README.md'
+      - '.github/workflows/**'
       - 'docs/**'
       - 'Screenshots/**'
       - '.idea/**'
