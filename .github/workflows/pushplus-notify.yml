@@ -1,0 +1,43 @@
+name: PushPlus Failure Notification
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+      - "Sync Upstream + Build + Release"
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  notify:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure' &&
+          secrets.PUSHPLUS_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send failure notification
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_NUMBER: ${{ github.event.workflow_run.run_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          payload="$(jq -n \
+            --arg token "$PUSHPLUS_TOKEN" \
+            --arg title "GitHub Actions 运行失败：$WORKFLOW_NAME" \
+            --arg content "仓库：$REPOSITORY\n工作流：$WORKFLOW_NAME\n分支：$BRANCH\n运行编号：#$RUN_NUMBER\n提交：$COMMIT\n详情：$RUN_URL" \
+            --arg template "markdown" \
+            '{token:$token,title:$title,content:$content,template:$template}')"
+
+          curl --fail --silent --show-error \
+            --request POST \
+            --url "https://www.pushplus.plus/send" \
+            --header "Content-Type: application/json" \
+            --data "$payload"
