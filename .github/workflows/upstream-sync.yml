@@ -104,7 +104,7 @@ jobs:
           RELEASE_TAG="$(
             git tag --list 'upstream-v*' --sort=-v:refname \
               | sed 's/^upstream-//' \
-              | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
               | head -n 1
           )"
 
@@ -729,7 +729,7 @@ jobs:
 
           RELEASE_TAG="${{ steps.upstream.outputs.tag }}"
 
-          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "[FAIL] invalid formal release tag: $RELEASE_TAG"
             exit 1
           fi
