@@ -14,9 +14,7 @@ permissions:
 
 jobs:
   notify:
-    if: >-
-      ${{ github.event.workflow_run.conclusion == 'failure' &&
-          secrets.PUSHPLUS_TOKEN != '' }}
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
     steps:
       - name: Send failure notification
@@ -29,6 +27,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: |
+          if [ -z "$PUSHPLUS_TOKEN" ]; then
+            echo "::warning::未配置仓库 Secret PUSHPLUS_TOKEN，跳过 PushPlus 通知。"
+            exit 0
+          fi
+
           payload="$(jq -n \
             --arg token "$PUSHPLUS_TOKEN" \
             --arg title "GitHub Actions 运行失败：$WORKFLOW_NAME" \
