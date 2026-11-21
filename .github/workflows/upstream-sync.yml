@@ -210,6 +210,11 @@ jobs:
 
           echo "[protect] .github/workflows/ (entire directory)"
 
+          # README is repository-specific and must never be replaced by upstream.
+          test -f README.md
+          cp -a README.md /tmp/local-protected/README.md
+          echo "[protect] README.md"
+
       # =========================================================
       # 8. Sync upstream
       # =========================================================
@@ -242,6 +247,10 @@ jobs:
             .github/workflows
 
           echo "[restore] .github/workflows/ (entire directory)"
+
+          # Restore the repository-specific README.
+          cp -a /tmp/local-protected/README.md README.md
+          echo "[restore] README.md"
 
           echo
           echo "[OK] upstream synchronized"
