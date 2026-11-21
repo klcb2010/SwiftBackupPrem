@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MOD="$ROOT/mod"
 JAVA_SRC="$ROOT/app/src/main/java"
 HOOK_DIR="$JAVA_SRC/io/github/s1ddhants1/swiftbackupprem/hook"
+MARKER='ModHook.apply(this, ctx, cl, targets, prefs)'
 
 echo "[mod] root=$ROOT"
 echo "[mod] mod=$MOD"
@@ -107,7 +108,7 @@ if grep -Eq 'XposedModule|XposedInterface' "$HOOK_DIR/ModHook.kt"; then
 fi
 
 for module_file in "${MODULE_FILES[@]}"; do
-    grep -Fq "$marker" "$module_file" || {
+    grep -Fq "$MARKER" "$module_file" || {
         echo "[FAIL] ModHook registration verification failed: $module_file"
         exit 1
     }
