@@ -1068,8 +1068,8 @@ jobs:
           echo "$CURRENT_HEAD"
 
           echo
-          echo "APK:"
-          echo "$APK"
+          echo "APKs:"
+          printf ' - %s\n' "${APK_FILES[@]}"
 
       # =========================================================
       # 24. Release skipped
