@@ -644,7 +644,7 @@ jobs:
             .github/workflows/upstream-sync.yml
 
           grep -Fq \
-            'git read-tree -u --reset upstream/main' \
+            'git read-tree -u --reset' \
             .github/workflows/upstream-sync.yml
 
           MODHOOK_FILES="$(
