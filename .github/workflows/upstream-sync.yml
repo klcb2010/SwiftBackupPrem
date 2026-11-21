@@ -584,7 +584,7 @@ jobs:
 
             DEX_LIST="$(
               unzip -Z1 "$APK" \
-                | grep -E '^classes([0-9]+)?\\.dex$' \
+                | grep -E '^classes([0-9]+)?\.dex$' \
                 || true
             )"
 
