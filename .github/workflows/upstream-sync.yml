@@ -78,63 +78,73 @@ jobs:
           git remote add upstream \
             https://github.com/s1ddhants1/SwiftBackupPrem.git
 
-          # 同步主分支
-          git fetch upstream main --depth=1
-
-          # 获取上游 v* Tag
+          # 只获取上游正式版本 Tag，不跟随 main 开发分支
           git fetch upstream \
             '+refs/tags/v*:refs/tags/upstream-v*' \
             --force
 
           echo
-          echo "[upstream main]"
-          git rev-parse upstream/main
-
-          echo
-          echo "[upstream v* tags]"
+          echo "[upstream formal v* tags]"
           git tag \
             --list 'upstream-v*' \
             --sort=-v:refname \
             | head -n 20 || true
 
       # =========================================================
-      # 5. Check upstream change
+      # 5. Check latest upstream formal release
       # =========================================================
-      - name: Check upstream change
+      - name: Check upstream release
         id: upstream
         shell: bash
         run: |
           set -euo pipefail
 
-          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          # 只接受正式版本号：v数字.数字.数字
+          # 自动排除 alpha / beta / rc / preview / dev 等版本。
+          RELEASE_TAG="$(
+            git tag --list 'upstream-v*' --sort=-v:refname \
+              | sed 's/^upstream-//' \
+              | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' \
+              | head -n 1
+          )"
 
-          echo "sha=$UPSTREAM_SHA" >> "$GITHUB_OUTPUT"
-
-          if [ -f .upstream.sha ]; then
-            LAST_SHA="$(tr -d '[:space:]' < .upstream.sha)"
-          else
-            LAST_SHA=""
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "[FAIL] no upstream formal release tag found"
+            exit 1
           fi
 
-          echo "last=$LAST_SHA"
-          echo "upstream=$UPSTREAM_SHA"
+          RELEASE_SHA="$(
+            git rev-parse "refs/tags/upstream-$RELEASE_TAG^{commit}"
+          )"
 
-          if [ "$LAST_SHA" = "$UPSTREAM_SHA" ]; then
+          if [ -f .upstream.release ]; then
+            LAST_RELEASE="$(tr -d '[:space:]' < .upstream.release)"
+          else
+            LAST_RELEASE=""
+          fi
+
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "last=$LAST_RELEASE"
+
+          echo
+          echo "Latest upstream formal release: $RELEASE_TAG"
+          echo "Release commit: $RELEASE_SHA"
+          echo "Previously synced release: ${LAST_RELEASE:-none}"
+
+          if [ "$LAST_RELEASE" = "$RELEASE_TAG" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "[INFO] upstream unchanged"
+            echo "[SKIP] no new upstream formal release"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "[INFO] upstream changed"
+            echo "[RUN] new upstream formal release detected"
           fi
 
       # =========================================================
       # 6. Decide execution
       #
-      # 手动运行：
-      #   永远执行 mod + build
-      #
-      # 定时运行：
-      #   upstream 有变化才执行
+      # 只有上游出现新的正式 Release 才同步、构建和发布。
+      # 手动运行与定时运行使用完全相同的判断规则。
       # =========================================================
       - name: Decide execution
         id: decision
@@ -142,24 +152,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+          if [ "${{ steps.upstream.outputs.changed }}" = "true" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-
-            echo
-            echo "[RUN] manual workflow dispatch"
-            echo "[RUN] local mod + build will ALWAYS execute"
-
-          elif [ "${{ steps.upstream.outputs.changed }}" = "true" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-
-            echo
-            echo "[RUN] upstream changed"
-
+            echo "[RUN] new upstream formal release: ${{ steps.upstream.outputs.tag }}"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-
-            echo
-            echo "[SKIP] scheduled run + upstream unchanged"
+            echo "[SKIP] upstream has no new formal release"
           fi
 
       # =========================================================
@@ -206,7 +204,7 @@ jobs:
 
           echo "[sync] synchronizing upstream..."
 
-          git read-tree -u --reset upstream/main
+          git read-tree -u --reset "${{ steps.upstream.outputs.sha }}"
 
           echo "[sync] restoring local protected files..."
 
@@ -606,18 +604,18 @@ jobs:
           echo "================================================="
 
       # =========================================================
-      # 17. Record upstream SHA
+      # 17. Record upstream formal release
       # =========================================================
-      - name: Record upstream SHA
-        if: steps.decision.outputs.run == 'true' && steps.upstream.outputs.changed == 'true'
+      - name: Record upstream release
+        if: steps.decision.outputs.run == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "${{ steps.upstream.outputs.sha }}" > .upstream.sha
+          echo "${{ steps.upstream.outputs.tag }}" > .upstream.release
 
-          echo "[upstream.sha]"
-          cat .upstream.sha
+          echo "[upstream.release]"
+          cat .upstream.release
 
       # =========================================================
       # 18. Final verification
@@ -720,15 +718,7 @@ jobs:
           fi
 
       # =========================================================
-      # 20. Determine release tag
-      #
-      # 上游 main 正好对应正式版 Tag：
-      #   沿用正式版号，例如 v3.2.0
-      #
-      # 上游 main 位于两个正式版之间：
-      #   发布独立开发构建，例如 dev-20261121.258
-      #
-      # 开发构建使用独立 Tag，不占用或冒用正式版号。
+      # 20. Use the exact upstream formal release tag
       # =========================================================
       - name: Determine release tag
         if: steps.decision.outputs.run == 'true'
@@ -737,71 +727,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
+          RELEASE_TAG="${{ steps.upstream.outputs.tag }}"
 
-          echo "================================================="
-          echo "Determine release tag"
-          echo "================================================="
-
-          echo "Upstream main SHA:"
-          echo "$UPSTREAM_SHA"
-
-          RELEASE_TAG=""
-
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-
-            TAG_SHA="$(
-              git rev-parse "refs/tags/$tag^{commit}" 2>/dev/null \
-              || true
-            )"
-
-            echo
-            echo "Checking upstream tag:"
-            echo "tag=$tag"
-            echo "tag_sha=$TAG_SHA"
-
-            if [ "$TAG_SHA" = "$UPSTREAM_SHA" ]; then
-              RELEASE_TAG="${tag#upstream-}"
-              break
-            fi
-
-          done < <(
-            git tag \
-              --list 'upstream-v*' \
-              --sort=-v:refname
-          )
-
-          if [ -n "$RELEASE_TAG" ]; then
-            PRERELEASE=false
-
-            case "$RELEASE_TAG" in
-              *preview*|*alpha*|*beta*|*rc*)
-                PRERELEASE=true
-                ;;
-            esac
-
-            echo "[OK] exact upstream release tag detected: $RELEASE_TAG"
-          else
-            BUILD_DATE="$(date -u +%Y%m%d)"
-            RELEASE_TAG="dev-${BUILD_DATE}.${GITHUB_RUN_NUMBER}"
-            PRERELEASE=true
-
-            echo "[INFO] upstream/main is between formal releases"
-            echo "[INFO] using independent development tag: $RELEASE_TAG"
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+            echo "[FAIL] invalid formal release tag: $RELEASE_TAG"
+            exit 1
           fi
 
           echo "release=true" >> "$GITHUB_OUTPUT"
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
 
-          echo
-          echo "================================================="
-          echo "[OK] release will be published"
-          echo "Tag       : $RELEASE_TAG"
-          echo "Prerelease: $PRERELEASE"
-          echo "SHA       : $UPSTREAM_SHA"
-          echo "================================================="
+          echo "[OK] publishing upstream formal release: $RELEASE_TAG"
 
       # =========================================================
       # 21. Check existing GitHub Release
@@ -871,25 +808,7 @@ jobs:
 
       # =========================================================
       # 22. Prepare local release tag
-      #
-      # 情况 A：
-      #   Tag 不存在
-      #   -> 创建到当前 HEAD
-      #
-      # 情况 B：
-      #   Tag 已存在，但 Release 不存在
-      #   -> 移动到当前 HEAD
-      #
-      # 情况 C：
-      #   Release 已存在
-      #   -> 本步骤不会执行
-      #
-      # 这正是当前 v3.0.1 的情况：
-      #
-      #   old tag -> ffb816...
-      #   current -> 6fc4da...
-      #
-      # 会把 v3.0.1 移到 6fc4da...
+      # Tag 对应本次同步、构建验证后的本地源码。
       # =========================================================
       - name: Prepare local release tag
         if: >
@@ -1050,29 +969,16 @@ jobs:
           PRERELEASE="${{ steps.release.outputs.prerelease }}"
 
           echo
-          echo "Prerelease : $PRERELEASE"
+          echo "Release type: formal"
 
           echo
           echo "[1/2] Creating GitHub Release..."
 
-          if [ "$PRERELEASE" = "true" ]; then
-
-            gh release create "$TAG_NAME" \
-              --repo "$REPOSITORY" \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              --prerelease \
-              "$APK"
-
-          else
-
-            gh release create "$TAG_NAME" \
-              --repo "$REPOSITORY" \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              "$APK"
-
-          fi
+          gh release create "$TAG_NAME" \
+            --repo "$REPOSITORY" \
+            --title "$TAG_NAME" \
+            --generate-notes \
+            "$APK"
 
           echo
           echo "[OK] GitHub Release created"
@@ -1145,7 +1051,7 @@ jobs:
 
           echo
           echo "[INFO] Publishing skipped."
-          echo "[INFO] Existing Release belongs to this repository."
+          echo "[INFO] This formal Release already exists in this repository."
 
       # =========================================================
       # 25. Upload APK artifact
