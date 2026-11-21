@@ -22,24 +22,24 @@ jobs:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           REPOSITORY: ${{ github.repository }}
-          COMMIT: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           if [ -z "$PUSHPLUS_TOKEN" ]; then
             echo "::warning::未配置仓库 Secret PUSHPLUS_TOKEN，跳过 PushPlus 通知。"
             exit 0
           fi
 
-          content="$(printf '**GitHub Actions运行失败通知**\n\n仓库：%s\n失败详情：[%s](%s)\n提交：`%.7s`' "$REPOSITORY" "$RUN_URL" "$RUN_URL" "$COMMIT")"
+          content="$(printf '**GitHub Actions运行失败通知**\\n\\n仓库：%s   分支：%s\\n失败详情：[%s](%s)' "$REPOSITORY" "$BRANCH" "$RUN_URL" "$RUN_URL")"
 
-          payload="$(jq -n \
-            --arg token "$PUSHPLUS_TOKEN" \
-            --arg title "GitHub Actions运行失败通知" \
-            --arg content "$content" \
-            --arg template "markdown" \
+          payload="$(jq -n \\
+            --arg token "$PUSHPLUS_TOKEN" \\
+            --arg title "GitHub Actions运行失败通知" \\
+            --arg content "$content" \\
+            --arg template "markdown" \\
             '{token:$token,title:$title,content:$content,template:$template}')"
 
-          curl --fail --silent --show-error \
-            --request POST \
-            --url "https://www.pushplus.plus/send" \
-            --header "Content-Type: application/json" \
+          curl --fail --silent --show-error \\
+            --request POST \\
+            --url "https://www.pushplus.plus/send" \\
+            --header "Content-Type: application/json" \\
             --data "$payload"
