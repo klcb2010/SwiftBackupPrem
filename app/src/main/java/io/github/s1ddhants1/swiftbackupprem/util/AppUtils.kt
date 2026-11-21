@@ -6,11 +6,10 @@ import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import io.github.s1ddhants1.swiftbackupprem.Consts
-import io.github.s1ddhants1.swiftbackupprem.FrameworkHelper
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 object AppUtils {
     private val chars = ('A'..'F') + ('0'..'9')
@@ -36,41 +35,18 @@ object AppUtils {
         attempt("launch Swift Backup") { context.startActivity(launchIntent) }
     }
 
-    suspend fun forceStopSwiftBackup(
-        context: Context,
-        prefs: PreferencesManager? = null,
-        ioDispatcher: CoroutineDispatcher = Dispatchers.IO
-    ): Boolean {
-        val wasRunning = FrameworkHelper.isTargetRunning(Consts.packageName)
-        if (wasRunning == false) {
-            return true
-        }
-
-        prefs?.requestForceStop() ?: run {
-            attempt("send force stop preference", silent = true) {
-                val local = context.getSharedPreferences(Consts.PREFS_SETTINGS, Context.MODE_PRIVATE)
-                PreferencesManager(local).requestForceStop()
-            }
-        }
-
-        attempt("send force-stop broadcast", silent = true) {
-            val intent = Intent(Consts.actionForceStop).apply {
-                setPackage(Consts.packageName)
-            }
-            context.sendBroadcast(intent)
-        }
-
+    suspend fun forceStopSwiftBackup(context: Context, ioDispatcher: CoroutineDispatcher = Dispatchers.IO): Boolean {
         val stopped = withContext(ioDispatcher) {
-            var isStopped = false
-            for (i in 0 until 10) {
-                delay(50)
-                val stillRunning = FrameworkHelper.isTargetRunning(Consts.packageName)
-                if (stillRunning == false) {
-                    isStopped = true
-                    break
-                }
+            var process: Process? = null
+            try {
+                process = Runtime.getRuntime().exec(arrayOf("su", "-c", "am force-stop ${Consts.packageName}"))
+                withTimeoutOrNull(3_000) { process.waitFor() } == 0
+            } catch (e: Exception) {
+                Log.w(Consts.TAG, "Could not force-stop Swift Backup with su", e)
+                false
+            } finally {
+                process?.destroy()
             }
-            isStopped || (wasRunning == null && FrameworkHelper.isModuleActive()) || wasRunning == true
         }
         if (stopped) return true
 

@@ -1,6 +1,5 @@
 package io.github.s1ddhants1.swiftbackupprem
 
-import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
 import android.util.Log
@@ -43,15 +42,6 @@ object FrameworkHelper {
     }
 
     fun isModuleActive(): Boolean = currentService != null
-
-    @SuppressLint("XposedNewApi")
-    fun isTargetRunning(packageName: String = Consts.packageName): Boolean? {
-        val service = currentService ?: return null
-        if (service.apiVersion < 102) return null
-        return attempt("check running targets", silent = true) {
-            service.runningTargets.any { it.processName == packageName }
-        }
-    }
 
     fun refreshEvaluation(context: Context): BannerEvaluation {
         val service = currentService

@@ -252,7 +252,7 @@ class MainActivity : ComponentActivity() {
                                     FilledTonalButton(
                                         onClick = {
                                             coroutineScope.launch {
-                                                val stopped = AppUtils.forceStopSwiftBackup(context, prefs)
+                                                val stopped = AppUtils.forceStopSwiftBackup(context)
                                                 snackbarHostState.showSnackbar(
                                                     if (stopped) getString(R.string.msg_swift_backup_force_stopped)
                                                     else getString(R.string.msg_opened_swift_backup_settings)
