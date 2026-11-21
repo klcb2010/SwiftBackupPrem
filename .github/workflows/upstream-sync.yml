@@ -173,9 +173,7 @@ jobs:
 
           rm -rf /tmp/local-protected
 
-          mkdir -p \
-            /tmp/local-protected \
-            /tmp/local-protected/.github/workflows
+          mkdir -p /tmp/local-protected
 
           # mod
           test -d mod
@@ -186,23 +184,16 @@ jobs:
 
           echo "[protect] mod/"
 
-          # ci.yml
-          if [ -f .github/workflows/ci.yml ]; then
-            cp \
-              .github/workflows/ci.yml \
-              /tmp/local-protected/.github/workflows/ci.yml
+          # Protect the complete local workflow directory.
+          # Upstream-added workflow files require the GitHub App
+          # "workflows" permission to push, which GITHUB_TOKEN lacks.
+          test -d .github/workflows
 
-            echo "[protect] .github/workflows/ci.yml"
-          fi
+          cp -a \
+            .github/workflows \
+            /tmp/local-protected/workflows
 
-          # upstream-sync.yml
-          test -f .github/workflows/upstream-sync.yml
-
-          cp \
-            .github/workflows/upstream-sync.yml \
-            /tmp/local-protected/.github/workflows/upstream-sync.yml
-
-          echo "[protect] .github/workflows/upstream-sync.yml"
+          echo "[protect] .github/workflows/ (entire directory)"
 
       # =========================================================
       # 8. Sync upstream
@@ -228,23 +219,14 @@ jobs:
 
           echo "[restore] mod/"
 
-          # ci.yml
-          if [ -f /tmp/local-protected/.github/workflows/ci.yml ]; then
-            mkdir -p .github/workflows
+          # Restore the complete local workflow directory.
+          rm -rf .github/workflows
 
-            cp \
-              /tmp/local-protected/.github/workflows/ci.yml \
-              .github/workflows/ci.yml
+          cp -a \
+            /tmp/local-protected/workflows \
+            .github/workflows
 
-            echo "[restore] .github/workflows/ci.yml"
-          fi
-
-          # upstream-sync.yml
-          cp \
-            /tmp/local-protected/.github/workflows/upstream-sync.yml \
-            .github/workflows/upstream-sync.yml
-
-          echo "[restore] .github/workflows/upstream-sync.yml"
+          echo "[restore] .github/workflows/ (entire directory)"
 
           echo
           echo "[OK] upstream synchronized"
@@ -657,6 +639,7 @@ jobs:
 
           test -f .github/workflows/ci.yml
           test -f .github/workflows/upstream-sync.yml
+          test ! -f .github/workflows/auto-update-targets.yml
 
           grep -Fq \
             'name: Sync Upstream + Build + Release' \
