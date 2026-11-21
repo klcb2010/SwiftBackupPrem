@@ -20,19 +20,21 @@ jobs:
       - name: Send failure notification
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "$PUSHPLUS_TOKEN" ]; then
             echo "::warning::未配置仓库 Secret PUSHPLUS_TOKEN，跳过 PushPlus 通知。"
             exit 0
           fi
 
+          content="$(printf '**GitHub Actions运行失败通知**\n\n仓库：%s\n失败详情：[%s](%s)\n提交：`%.7s`' "$REPOSITORY" "$RUN_URL" "$RUN_URL" "$COMMIT")"
+
           payload="$(jq -n \
             --arg token "$PUSHPLUS_TOKEN" \
             --arg title "GitHub Actions运行失败通知" \
-            --arg content "仓库：$REPOSITORY\\n工作流：$WORKFLOW_NAME\\n失败详情：$RUN_URL" \
+            --arg content "$content" \
             --arg template "markdown" \
             '{token:$token,title:$title,content:$content,template:$template}')"
 
